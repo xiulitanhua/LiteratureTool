@@ -845,10 +845,14 @@ class LiteratureApp:
                 self._draw_progress((cur / tn) * 100)
                 self.root.update_idletasks()
                 st = row.get("_download_status", "")
+                src = row.get("_download_source", "")
+                src_tag = f" [{src}]" if src and src != "—" else ""
                 ts = str(row.get("title", ""))[:40]
-                if "成功" in st: self._log(f"  ✅ {ts}", "success")
+                if "✅" in st:
+                    self._log(f"  ✅ {ts}{src_tag}", "success")
                 elif "跳过" in st: pass
-                else: self._log(f"  ❌ {ts}", "error")
+                else:
+                    self._log(f"  ❌ {ts}", "error")
 
             results = download_all(rows, sd, progress_callback=cb)
 
