@@ -1,6 +1,6 @@
 {
-  "release_notes": "https://github.com/xiulitanhua/LiteratureTool/releases/latest",
   "download_url": "https://github.com/xiulitanhua/LiteratureTool/releases/latest/download/wenxian_gongju.exe",
-  "version": "20260622-1619",
-  "app_name": "文献综合工具"
+  "app_name": "文献综合工具",
+  "release_notes": "https://github.com/xiulitanhua/LiteratureTool/releases/latest",
+  "version": "20260622-1623"
 }
