@@ -7,6 +7,7 @@ on:
       - 'README.md'
       - '.gitignore'
       - 'Downloaded_PDFs/**'
+      - 'version.json'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +32,29 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = Get-Date -Format "yyyyMMdd-HHmm"
+          "version=v$ver" >> $env:GITHUB_OUTPUT
+          echo "VERSION=$ver"
+          $short = Get-Date -Format "yyyyMMdd"
+          "short_version=$short" >> $env:GITHUB_OUTPUT
+
+      - name: Update version.json
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $ver = $ver -replace '^v',''
+          $json = @{
+            version = $ver
+            app_name = "文献综合工具"
+            download_url = "https://github.com/${{ github.repository }}/releases/latest/download/wenxian_gongju.exe"
+            release_notes = "https://github.com/${{ github.repository }}/releases/latest"
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText("${{ github.workspace }}\version.json", $json, [System.Text.UTF8Encoding]::new($false))
+
       - name: Build EXE
         shell: pwsh
         run: |
@@ -50,14 +74,8 @@ jobs:
           path: dist/wenxian_gongju.exe
           retention-days: 7
 
-      - name: Get version
-        id: version
-        shell: pwsh
-        run: |
-          $ver = Get-Date -Format "yyyyMMdd-HHmm"
-          "version=v$ver" >> $env:GITHUB_OUTPUT
-
       - name: Create Release
+        id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
@@ -65,10 +83,22 @@ jobs:
           body: |
             ## Auto Build
 
-            Build time: ${{ github.event.head_commit.timestamp }}
-            Commit: ${{ github.event.head_commit.message }}
+            **Build time**: ${{ github.event.head_commit.timestamp }}
+            **Commit**: ${{ github.event.head_commit.message }}
 
-            Download `wenxian_gongju.exe` to use. No Python required.
+            ### Download
+            Click `wenxian_gongju.exe` below to download. No Python required.
+
+            The app will auto-detect this update on next launch.
           files: dist/wenxian_gongju.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit version.json
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          git commit -m "chore: update version to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push || echo "Push failed (may already be up to date)"

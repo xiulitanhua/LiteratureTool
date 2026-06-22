@@ -11,6 +11,10 @@ import pandas as pd
 
 from doi_fetcher import find_doi, extract_year, normalize_text, DEFAULT_THRESHOLD
 from pdf_downloader import download_all, build_filename, clean_filename
+from updater import check_for_update
+
+# 当前版本号（格式: yyyyMMdd-HHmm，与 GitHub version.json 对比）
+CURRENT_VERSION = "20260622-0000"
 
 # ═══════════════ 主题色板 (浅色科研软件风格) ═══════════════
 
@@ -93,6 +97,9 @@ class LiteratureApp:
         self._build_ui()
         self._log("文献综合处理工具 v3.3", "header")
         self._log("Excel → DOI 获取 → PDF 下载，当前界面以文献表格核对为中心。")
+
+        # 后台检查更新
+        check_for_update(self.root, CURRENT_VERSION)
 
     # ═══════════════ UI 构建 ═══════════════
 
