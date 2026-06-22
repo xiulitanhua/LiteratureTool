@@ -7,7 +7,8 @@ venv/
 
 # PyInstaller
 build/
-dist/
+dist/*
+!dist/文献综合工具.exe
 *.spec.bak
 *.spec~
 
