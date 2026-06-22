@@ -4,6 +4,7 @@
 """
 
 import os, sys, re, json, threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
@@ -79,6 +80,7 @@ class LiteratureApp:
         self.input_path = tk.StringVar()
         self.output_dir = tk.StringVar(value=os.getcwd())
         self.threshold = tk.DoubleVar(value=0.8)
+        self.concurrency = 5  # 并发线程数
         self.running = False
         self.stop_requested = False
         self.df = None
@@ -723,53 +725,74 @@ class LiteratureApp:
                 rows_p.append((idx, str(title).strip(), yr))
 
             total = len(rows_p)
-            self._log(f"获取 DOI — {total} 条 (阈值 {int(threshold*100)}%)", "header")
-            self._update_stats(stage="🔍 获取中...", doi_total=total)
+            if total == 0:
+                self._log("所有文献已有 DOI，无需获取", "info")
+                self._update_stats(stage="✅ 无需获取")
+                return
+
+            workers = min(self.concurrency, total)
+            self._log(f"⚡ 并发获取 DOI — {total} 条 ({workers} 线程) (阈值 {int(threshold*100)}%)", "header")
+            self._update_stats(stage=f"🔍 {workers}线程获取中...", doi_total=total)
 
             found = 0
             failed = 0
-            for i, (idx, title, year) in enumerate(rows_p):
-                if self.stop_requested:
-                    self._log("已停止", "warn")
-                    break
-                self.status_var.set(f"DOI: {i+1}/{total}")
-                pct = (i / max(total, 1)) * 100
-                self._draw_progress(pct)
-                self.root.update_idletasks()
+            completed = 0
+            lock = threading.Lock()
+            futures_map = {}  # future -> (idx, title)
 
-                r = find_doi(title, threshold, year)
-                if r and "doi" in r and r["doi"]:
-                    self.df.at[idx, "DOI"] = r["doi"]
-                    self.df.at[idx, "DOI链接"] = r.get("url") or f"https://doi.org/{r['doi']}"
-                    self.df.at[idx, "匹配度"] = f"{int(r.get('similarity', 0) * 100)}%"
-                    self.df.at[idx, "DOI来源"] = r.get("source", "Unknown")
-                    self.df.at[idx, "DOI状态"] = "已匹配"
-                    found += 1
-                    self.status_var.set(f"DOI: {i+1}/{total}，已匹配 {found}，未匹配 {failed}")
-                    self._log(f"  ✅ [{r['source']}] {r['doi'][:40]}", "success")
-                else:
-                    self.df.at[idx, "DOI状态"] = "获取失败：未找到高可信 DOI"
-                    self.df.at[idx, "匹配度"] = "—"
-                    self.df.at[idx, "DOI来源"] = "—"
-                    failed += 1
-                    self.status_var.set(f"DOI: {i+1}/{total}，已匹配 {found}，未匹配 {failed}")
-                    self._log(f"  ❌ {title[:50]}", "error")
-                self._draw_progress(((i + 1) / max(total, 1)) * 100)
-                self._update_stats(doi_found=found, doi_failed=failed)
-                self._refresh_table()
-                self.root.update_idletasks()
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for idx, title, year in rows_p:
+                    if self.stop_requested:
+                        break
+                    future = executor.submit(find_doi, title, threshold, year)
+                    futures_map[future] = (idx, title)
+
+                for future in as_completed(futures_map):
+                    if self.stop_requested:
+                        break
+                    idx, title = futures_map[future]
+                    try:
+                        r = future.result()
+                    except Exception as e:
+                        r = None
+
+                    with lock:
+                        completed += 1
+                        if r and "doi" in r and r["doi"]:
+                            self.df.at[idx, "DOI"] = r["doi"]
+                            self.df.at[idx, "DOI链接"] = r.get("url") or f"https://doi.org/{r['doi']}"
+                            self.df.at[idx, "匹配度"] = f"{int(r.get('similarity', 0) * 100)}%"
+                            self.df.at[idx, "DOI来源"] = r.get("source", "Unknown")
+                            self.df.at[idx, "DOI状态"] = "已匹配"
+                            found += 1
+                            src = r.get('source', '?')
+                            self._log(f"  ✅ [{src}] {r['doi'][:40]}", "success")
+                        else:
+                            self.df.at[idx, "DOI状态"] = "获取失败"
+                            self.df.at[idx, "匹配度"] = "—"
+                            self.df.at[idx, "DOI来源"] = "—"
+                            failed += 1
+                            self._log(f"  ❌ {title[:50]}", "error")
+
+                        pct = (completed / total) * 100
+                        self._draw_progress(pct)
+                        self.status_var.set(f"DOI: {completed}/{total}  ✅{found} ❌{failed}")
+                        self._update_stats(doi_found=found, doi_failed=failed)
+                        self.root.update_idletasks()
 
             op = self._get_output_path("_已加DOI.xlsx")
             self.df.to_excel(op, index=False)
             self._draw_progress(100)
-            self.status_var.set(f"DOI 完成：成功 {found}，未匹配 {failed}，总计 {total}")
+            self.status_var.set(f"DOI 完成：成功 {found}，未匹配 {failed}")
             if failed:
-                self._log(f"⚠ DOI 完成: 成功 {found}/{total}，未匹配 {failed}", "warn")
-                messagebox.showwarning("DOI 获取完成", f"成功匹配 {found} 条，未匹配 {failed} 条。\n未匹配记录已在表格中用红色标出。")
+                self._log(f"⚠ DOI 完成: {found}/{total} (未匹配 {failed})", "warn")
+                messagebox.showwarning("DOI 获取完成",
+                    f"成功匹配 {found} 条，未匹配 {failed} 条。")
             else:
                 self._log(f"✅ DOI 完成: {found}/{total}", "success")
             self._log(f"📁 {op}", "info")
-            self._update_stats(stage="✅ DOI 完成" if not failed else "⚠ DOI 有未匹配", doi_found=found, doi_failed=failed)
+            self._update_stats(stage="✅ DOI 完成" if not failed else "⚠ 有未匹配",
+                               doi_found=found, doi_failed=failed)
             self._detect_columns(reload=False)
             self._refresh_table()
 
