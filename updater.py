@@ -3,7 +3,7 @@
 支持"跳过此版本"不再重复提示
 """
 
-import json, os, sys, threading, time, tempfile
+import json, os, sys, subprocess, threading, time, tempfile
 import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
@@ -146,27 +146,32 @@ def _dialog(root, cur_ver, new_ver, dl_url, log_cb):
 
                 cur = sys.executable
                 cur_dir = os.path.dirname(cur)
+                cur_name = os.path.basename(cur)
                 old_backup = os.path.join(cur_dir, "_old_version.exe")
+                err_log = os.path.join(tempfile.gettempdir(), "_lit_update_err.txt")
                 script = os.path.join(tempfile.gettempdir(), "_lit_update.ps1")
                 with open(script, 'w', encoding='utf-8') as sf:
                     sf.write('$cur = ' + json.dumps(cur) + '\n')
                     sf.write('$tp  = ' + json.dumps(tp) + '\n')
                     sf.write('$bak = ' + json.dumps(old_backup) + '\n')
-                    sf.write('Write-Host "Updating..."\n')
+                    sf.write('$err = ' + json.dumps(err_log) + '\n')
+                    sf.write('$name = ' + json.dumps(cur_name) + '\n')
                     sf.write('Start-Sleep -Seconds 4\n')
                     sf.write('try {\n')
-                    sf.write('    if (Test-Path $cur) { Rename-Item $cur "_old_version.exe" -Force }\n')
-                    sf.write('    Move-Item $tp $cur -Force\n')
-                    sf.write('    Write-Host "OK"\n')
+                    sf.write('    if (Test-Path $cur) { Rename-Item $cur "_old_version.exe" -Force -ErrorAction Stop }\n')
+                    sf.write('    Move-Item $tp $cur -Force -ErrorAction Stop\n')
                     sf.write('    Start-Process $cur\n')
-                    sf.write('    if (Test-Path $bak) { Remove-Item $bak -Force }\n')
+                    sf.write('    if (Test-Path $bak) { Remove-Item $bak -Force -ErrorAction SilentlyContinue }\n')
                     sf.write('} catch {\n')
-                    sf.write('    if (Test-Path $bak) { Rename-Item $bak (Split-Path $cur -Leaf) -Force }\n')
-                    sf.write('    Write-Host "Failed: $tp"\n')
-                    sf.write('    Read-Host\n')
+                    sf.write('    $_ | Out-File $err -Encoding UTF8\n')
+                    sf.write('    if (Test-Path $bak) { Rename-Item $bak $name -Force -ErrorAction SilentlyContinue }\n')
+                    sf.write('    Start-Sleep -Seconds 8\n')
                     sf.write('}\n')
                     sf.write(f'Remove-Item "{script}" -Force -ErrorAction SilentlyContinue\n')
-                os.system(f'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
+                # 非阻塞启动 PowerShell，不等待结果
+                subprocess.Popen(
+                    f'powershell -ExecutionPolicy Bypass -File "{script}"',
+                    shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 root.quit()
             except Exception as e:
                 if not _cancel[0]:
