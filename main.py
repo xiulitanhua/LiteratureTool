@@ -240,6 +240,10 @@ class LiteratureApp:
         ybar.grid(row=0, column=1, sticky=tk.NS)
         self.paper_table.configure(yscrollcommand=ybar.set)
         self.paper_table.bind("<<TreeviewSelect>>", self._on_table_select)
+        # 绑定鼠标滚轮滚动
+        self.paper_table.bind("<MouseWheel>", lambda e: self._on_mousewheel(e))
+        # 绑定双击事件以防滚动期间点击丢失
+        self.paper_table.bind("<Button-1>", self._on_table_click)
 
         side = tk.Frame(work, bg=C["bg_dark"], width=320)
         side.grid(row=0, column=1, sticky=tk.NS)
@@ -466,6 +470,13 @@ class LiteratureApp:
     def _refresh_table(self, select_first=False):
         if not hasattr(self, "paper_table"):
             return
+        # 保存当前滚动位置
+        scroll_pos = self.paper_table.yview()[0] if self.paper_table.get_children() else 0
+        # 保存当前选中行
+        selected_iid = None
+        sel = self.paper_table.selection()
+        if sel: selected_iid = sel[0]
+
         for item in self.paper_table.get_children():
             self.paper_table.delete(item)
         if self.df is None:
@@ -522,6 +533,12 @@ class LiteratureApp:
             self._on_table_select()
         elif not self.paper_table.selection():
             self._set_detail()
+        # 恢复滚动位置和选中行
+        if scroll_pos > 0:
+            self.paper_table.yview_moveto(scroll_pos)
+        if selected_iid and self.paper_table.exists(selected_iid):
+            self.paper_table.selection_set(selected_iid)
+            self.paper_table.focus(selected_iid)
 
     def _set_detail(self, row=None):
         values = {
@@ -571,6 +588,24 @@ class LiteratureApp:
         if self._doi_url:
             import webbrowser
             webbrowser.open(self._doi_url)
+
+    def _on_mousewheel(self, event):
+        """鼠标滚轮滚动 Treeview"""
+        if hasattr(self, "paper_table"):
+            delta = -1 if event.delta > 0 else 1
+            self.paper_table.yview_scroll(delta, "units")
+
+    def _on_table_click(self, event):
+        """处理 Treeview 点击，确保滚动期间也能选中"""
+        if not hasattr(self, "paper_table"): return
+        item = self.paper_table.identify_row(event.y)
+        if item:
+            self.paper_table.selection_set(item)
+            self.paper_table.focus(item)
+            self._on_table_select()
+        else:
+            self.paper_table.selection_remove(self.paper_table.selection())
+            self._set_detail()
 
     def _on_table_select(self, _event=None):
         if self.df is None or not hasattr(self, "paper_table"):
