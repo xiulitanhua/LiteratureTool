@@ -55,6 +55,17 @@ jobs:
           } | ConvertTo-Json
           [System.IO.File]::WriteAllText("${{ github.workspace }}\version.json", $json, [System.Text.UTF8Encoding]::new($false))
 
+      - name: Inject version into source
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $ver = $ver -replace '^v',''
+          $file = "${{ github.workspace }}\main.py"
+          $content = [System.IO.File]::ReadAllText($file, [System.Text.UTF8Encoding]::new($false))
+          $content = $content -replace 'CURRENT_VERSION\s*=\s*"[^"]*"', "CURRENT_VERSION = `"$ver`""
+          [System.IO.File]::WriteAllText($file, $content, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Version injected: $ver"
+
       - name: Build EXE
         shell: pwsh
         run: |
