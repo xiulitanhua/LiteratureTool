@@ -256,8 +256,14 @@ class LiteratureApp:
                      bg=C["bg_card"]).pack(anchor=tk.W, pady=(9, 2))
             var = tk.StringVar(value="—")
             self.detail_vars[key] = var
-            tk.Label(detail_body, textvariable=var, font=(FONT, 9), fg=C["text"],
-                     bg=C["bg_card"], anchor=tk.W, justify=tk.LEFT, wraplength=280).pack(anchor=tk.W, fill=tk.X)
+            lbl = tk.Label(detail_body, textvariable=var, font=(FONT, 9), fg=C["text"],
+                     bg=C["bg_card"], anchor=tk.W, justify=tk.LEFT, wraplength=280)
+            lbl.pack(anchor=tk.W, fill=tk.X)
+            if key == "doi":
+                self._doi_detail_label = lbl
+                self._doi_url = ""
+                lbl.bind("<Button-1>", self._on_doi_click)
+                lbl.bind("<Enter>", lambda e: lbl.configure(cursor="hand2"))
 
         progress_panel = tk.Frame(p, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
         progress_panel.pack(fill=tk.X, padx=18, pady=(0, 10))
@@ -522,6 +528,7 @@ class LiteratureApp:
             "title": "—", "doi": "—", "source": "—",
             "status": "—", "match": "—", "pdf": "—", "path": "—",
         }
+        self._doi_url = ""
         if row is not None:
             tcn = self._resolve_column("title_col")
             dcn = self._doi_column_for_display()
@@ -532,6 +539,12 @@ class LiteratureApp:
             doi = self._cell_text(row, dcn)
             pdf = self._cell_text(row, pdf_col)
             doi_status = "已匹配" if doi else self._cell_text(row, doi_status_col, "待查询")
+            # 存储 DOI URL 用于点击跳转
+            self._doi_url = f"https://doi.org/{doi}" if doi else ""
+            doi_link_col = "DOI链接"
+            if self.df is not None and doi_link_col in list(self.df.columns):
+                link = self._cell_text(row, doi_link_col)
+                if link and link != "—": self._doi_url = link
             values.update({
                 "title": self._cell_text(row, tcn, "未命名文献"),
                 "doi": doi or "待查询",
@@ -544,6 +557,20 @@ class LiteratureApp:
         for key, value in values.items():
             if key in self.detail_vars:
                 self.detail_vars[key].set(value)
+        # DOI 链接样式：有 DOI 时蓝字可点击，无 DOI 时灰色
+        if hasattr(self, "_doi_detail_label"):
+            if self._doi_url:
+                self._doi_detail_label.configure(fg=C["accent"], cursor="hand2",
+                    font=(FONT, 9, "underline"))
+            else:
+                self._doi_detail_label.configure(fg=C["text"], cursor="",
+                    font=(FONT, 9))
+
+    def _on_doi_click(self, _event=None):
+        """点击 DOI 标签时在浏览器打开 DOI 链接"""
+        if self._doi_url:
+            import webbrowser
+            webbrowser.open(self._doi_url)
 
     def _on_table_select(self, _event=None):
         if self.df is None or not hasattr(self, "paper_table"):
