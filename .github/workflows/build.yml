@@ -1,6 +1,5 @@
-name: Build & Release EXE
+name: Build and Release EXE
 
-# 当推送代码到 main 分支或手动触发时运行
 on:
   push:
     branches: [main, master]
@@ -8,7 +7,7 @@ on:
       - 'README.md'
       - '.gitignore'
       - 'Downloaded_PDFs/**'
-  workflow_dispatch:   # 允许手动触发
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,47 +17,58 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置 Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
-      - name: 安装依赖
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: 构建 EXE
+      - name: Build EXE
         shell: pwsh
         run: |
-          pyinstaller --onefile --console --name "文献综合工具" --distpath "./dist" --workpath "./build" --specpath "./build" main.py
+          $env:PYTHONUTF8 = 1
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          pyinstaller --onefile --console --name LiteratureTool --distpath dist --workpath build --specpath build main.py
 
-      - name: 获取版本号 (日期)
+      - name: Rename EXE
+        shell: pwsh
+        run: |
+          Rename-Item -Path "dist\LiteratureTool.exe" -NewName "wenxian_gongju.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wenxian-tool
+          path: dist/wenxian_gongju.exe
+          retention-days: 7
+
+      - name: Get version
         id: version
         shell: pwsh
         run: |
           $ver = Get-Date -Format "yyyyMMdd-HHmm"
-          echo "version=v$ver" >> $env:GITHUB_OUTPUT
+          "version=v$ver" >> $env:GITHUB_OUTPUT
 
-      - name: 创建 Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          name: "文献综合工具 ${{ steps.version.outputs.version }}"
+          name: Release ${{ steps.version.outputs.version }}
           body: |
-            ## 🔄 自动构建版本
-            
-            构建时间: ${{ github.event.repository.updated_at }}
-            提交: ${{ github.sha }}
-            
-            ### 下载
-            下载 `文献综合工具.exe` 即可使用，无需安装 Python。
-          files: dist/文献综合工具.exe
-          draft: false
-          prerelease: false
+            ## Auto Build
+
+            Build time: ${{ github.event.head_commit.timestamp }}
+            Commit: ${{ github.event.head_commit.message }}
+
+            Download `wenxian_gongju.exe` to use. No Python required.
+          files: dist/wenxian_gongju.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
