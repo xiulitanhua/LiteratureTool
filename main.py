@@ -13,6 +13,7 @@ import pandas as pd
 from doi_fetcher import find_doi, extract_year, normalize_text, DEFAULT_THRESHOLD
 from pdf_downloader import download_all, build_filename, clean_filename
 from updater import check_for_update
+from report import generate_report
 
 # 当前版本号（格式: yyyyMMdd-HHmm，与 GitHub version.json 对比）
 CURRENT_VERSION = "20260622-0000"
@@ -907,6 +908,12 @@ class LiteratureApp:
             self._log(f"📁 {op}", "info")
             self._update_stats(stage="✅ 完成", pdf_done=sc)
             self._refresh_table()
+            # 生成报告
+            try:
+                rp = generate_report(self.output_dir.get(),
+                    os.path.basename(self.input_path.get()), self.df)
+                self._log(f"📊 报告: {os.path.basename(rp)}", "success")
+            except Exception: pass
 
         except Exception as e:
             self._log(f"PDF 错误: {e}", "error")
@@ -948,6 +955,11 @@ class LiteratureApp:
                 self._log("═" * 40, "header")
                 self.status_var.set("全流程完成 ✅")
                 self._update_stats(stage="🎉 完成")
+                # 生成 HTML 报告
+                self._log("📊 正在生成结果报告...", "info")
+                rp = generate_report(self.output_dir.get(),
+                    os.path.basename(self.input_path.get()), self.df)
+                self._log(f"📊 报告已生成: {os.path.basename(rp)}", "success")
         except Exception as e:
             self._log(f"全流程错误: {e}", "error")
             messagebox.showerror("错误", str(e))
