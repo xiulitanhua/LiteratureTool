@@ -101,7 +101,7 @@ class LiteratureApp:
         self._log("Excel → DOI 获取 → PDF 下载，当前界面以文献表格核对为中心。")
 
         # 后台检查更新
-        check_for_update(self.root, CURRENT_VERSION)
+        check_for_update(self.root, CURRENT_VERSION, log_callback=self._log)
 
     # ═══════════════ UI 构建 ═══════════════
 
