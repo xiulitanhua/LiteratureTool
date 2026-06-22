@@ -121,17 +121,27 @@ def _dialog(root, cur_ver, new_ver, dl_url, log_cb):
                 pvar.set(100); sv.set("正在替换..."); dlg.update_idletasks()
 
                 cur = sys.executable
+                cur_dir = os.path.dirname(cur)
+                old_backup = os.path.join(cur_dir, "_old_version.exe")
                 bat = os.path.join(tempfile.gettempdir(), "_lit_update.bat")
-                with open(bat, 'w', encoding='gbk') as bf:
-                    bf.write('@echo off\nchcp 65001 >nul\n')
-                    bf.write('echo 更新文献综合工具...\n')
-                    bf.write('timeout /t 3 /nobreak >nul\n')
-                    bf.write(f'del /f /q "{cur}" 2>nul\n')
-                    bf.write(f'move /y "{tp}" "{cur}" >nul\n')
+                with open(bat, 'w', encoding='ascii') as bf:
+                    bf.write('@echo off\n')
+                    bf.write('echo Updating...\n')
+                    bf.write('ping 127.0.0.1 -n 4 >nul\n')
+                    # 先重命名旧文件（避免占用冲突）
+                    bf.write(f'if exist "{cur}" ren "{cur}" "_old_version.exe"\n')
+                    # 移入新文件
+                    bf.write(f'move /y "{tp}" "{cur}" >nul 2>&1\n')
                     bf.write('if %errorlevel% equ 0 (\n')
+                    bf.write('  echo Update OK, starting...\n')
                     bf.write(f'  start "" "{cur}"\n')
+                    # 删除旧备份
+                    bf.write(f'  del /f /q "{old_backup}" 2>nul\n')
                     bf.write(') else (\n')
-                    bf.write('  echo 更新失败，新版本: ' + tp + '\npause\n')
+                    bf.write(f'  if exist "{old_backup}" ren "{old_backup}" "{os.path.basename(cur)}"\n')
+                    bf.write(f'  echo Update failed, new version saved to:\n')
+                    bf.write(f'  echo {tp}\n')
+                    bf.write('  pause\n')
                     bf.write(')\n')
                     bf.write(f'del /f /q "{bat}" 2>nul\n')
                 os.startfile(bat)
