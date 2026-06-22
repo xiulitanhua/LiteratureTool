@@ -779,6 +779,9 @@ class LiteratureApp:
                         self._draw_progress(pct)
                         self.status_var.set(f"DOI: {completed}/{total}  ✅{found} ❌{failed}")
                         self._update_stats(doi_found=found, doi_failed=failed)
+                        # 实时刷新表格
+                        if completed % 3 == 0 or completed == total:
+                            self.root.after(0, self._refresh_table)
                         self.root.update_idletasks()
 
             op = self._get_output_path("_已加DOI.xlsx")
@@ -870,20 +873,34 @@ class LiteratureApp:
             self._log(f"下载 PDF — {total} 篇 → {sd}", "header")
             self._update_stats(stage="📥 下载中...", pdf_done=0)
 
+            # DOI → DataFrame index 映射（用于实时更新）
+            doi_to_dfidx = {}
+            for dfi, row in self.df.iterrows():
+                d = str(row.get(dcn, "")).strip()
+                if d: doi_to_dfidx[d] = dfi
+
             def cb(cur, tn, row):
                 if self.stop_requested: return
                 self.status_var.set(f"PDF: {cur}/{tn}")
                 self._draw_progress((cur / tn) * 100)
-                self.root.update_idletasks()
                 st = row.get("_download_status", "")
                 src = row.get("_download_source", "")
                 src_tag = f" [{src}]" if src and src != "—" else ""
                 ts = str(row.get("title", ""))[:40]
                 if "✅" in st:
+                    # 实时更新 DataFrame 中的 PDF 链接
+                    d = row.get("DOI", "")
+                    if d in doi_to_dfidx:
+                        pl = row.get("PDF链接", "")
+                        if pl: self.df.at[doi_to_dfidx[d], "PDF链接"] = pl
                     self._log(f"  ✅ {ts}{src_tag}", "success")
                 elif "跳过" in st: pass
                 else:
                     self._log(f"  ❌ {ts}", "error")
+                # 每完成一条刷新表格
+                if cur % 2 == 0 or cur == tn:
+                    self.root.after(0, self._refresh_table)
+                self.root.update_idletasks()
 
             results = download_all(rows, sd, progress_callback=cb)
 
