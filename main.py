@@ -16,7 +16,7 @@ from updater import check_for_update
 from report import generate_report
 
 # 当前版本号（格式: yyyyMMdd-HHmm，与 GitHub version.json 对比）
-CURRENT_VERSION = "20260622-0000"
+CURRENT_VERSION = "20260623-1730"
 
 # ═══════════════ 主题色板 (浅色科研软件风格) ═══════════════
 
