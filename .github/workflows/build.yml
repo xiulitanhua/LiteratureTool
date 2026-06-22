@@ -1,0 +1,64 @@
+name: Build & Release EXE
+
+# 当推送代码到 main 分支或手动触发时运行
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'README.md'
+      - '.gitignore'
+      - 'Downloaded_PDFs/**'
+  workflow_dispatch:   # 允许手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: 构建 EXE
+        shell: pwsh
+        run: |
+          pyinstaller --onefile --console --name "文献综合工具" --distpath "./dist" --workpath "./build" --specpath "./build" main.py
+
+      - name: 获取版本号 (日期)
+        id: version
+        shell: pwsh
+        run: |
+          $ver = Get-Date -Format "yyyyMMdd-HHmm"
+          echo "version=v$ver" >> $env:GITHUB_OUTPUT
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "文献综合工具 ${{ steps.version.outputs.version }}"
+          body: |
+            ## 🔄 自动构建版本
+            
+            构建时间: ${{ github.event.repository.updated_at }}
+            提交: ${{ github.sha }}
+            
+            ### 下载
+            下载 `文献综合工具.exe` 即可使用，无需安装 Python。
+          files: dist/文献综合工具.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
