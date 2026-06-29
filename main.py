@@ -773,7 +773,11 @@ class LiteratureApp:
 
             for col in ["DOI", "DOI链接", "匹配度", "DOI来源", "DOI状态"]:
                 if col not in headers:
-                    self.df[col] = None
+                    self.df[col] = pd.NA
+            # 确保这些列为 object/string 类型，避免 float64 冲突
+            for col in ["DOI", "DOI链接", "匹配度", "DOI来源", "DOI状态"]:
+                if col in self.df.columns:
+                    self.df[col] = self.df[col].astype(object)
             headers = list(self.df.columns)
 
             dcn = "DOI" if dc is None else headers[dc]
