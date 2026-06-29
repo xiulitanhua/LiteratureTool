@@ -1,6 +1,6 @@
 """
 DOI 获取模块 —— 通过 Crossref / OpenAlex 自动查询文献 DOI
-支持标题匹配度筛选，年份辅助匹配
+使用 标题 + 第一作者 + 年份 进行综合匹配
 """
 
 import re
@@ -93,9 +93,32 @@ def get_year_from_crossref(item):
     return None
 
 
-def search_crossref(title, threshold=DEFAULT_THRESHOLD, year=None):
-    """通过 Crossref API 搜索文献"""
-    url = f"https://api.crossref.org/works?rows=5&select=DOI,URL,title,issued,published,published-print,published-online&query.title={quote(title)}"
+def get_first_author_lastname(author_str):
+    """提取第一作者的姓（英文）"""
+    if not author_str or str(author_str).lower() == 'nan':
+        return ""
+    author_str = str(author_str).strip()
+    # 取第一个作者（; 或 , 或 & 分隔）
+    first = re.split(r'[;,&]', author_str)[0].strip()
+    # 尝试 "LastName, FirstName" 格式
+    if ',' in first:
+        return first.split(',')[0].strip()
+    # 尝试 "FirstName LastName" 格式，取最后一个词
+    parts = first.split()
+    if len(parts) >= 2:
+        return parts[-1]
+    return first
+
+
+def search_crossref(title, threshold=DEFAULT_THRESHOLD, year=None, author=None):
+    """通过 Crossref API 搜索文献（标题 + 第一作者）"""
+    # 构建 bibliographic 查询：标题 + 第一作者姓
+    lastname = get_first_author_lastname(author) if author else ""
+    query_parts = [title]
+    if lastname:
+        query_parts.append(lastname)
+    bibliographic = " ".join(query_parts)
+    url = f"https://api.crossref.org/works?rows=5&select=DOI,URL,title,author,issued,published,published-print,published-online&query.bibliographic={quote(bibliographic)}"
     try:
         resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
         resp.raise_for_status()
@@ -134,12 +157,18 @@ def search_crossref(title, threshold=DEFAULT_THRESHOLD, year=None):
 
 # ========== OpenAlex API ==========
 
-def search_openalex(title, threshold=DEFAULT_THRESHOLD, year=None):
-    """通过 OpenAlex API 搜索文献"""
+def search_openalex(title, threshold=DEFAULT_THRESHOLD, year=None, author=None):
+    """通过 OpenAlex API 搜索文献（标题 + 第一作者）"""
+    # 构建搜索词：标题 + 第一作者姓
+    lastname = get_first_author_lastname(author) if author else ""
+    search_terms = [title]
+    if lastname:
+        search_terms.append(lastname)
+    search_query = " ".join(search_terms)
     year_filter = ""
     if year:
         year_filter = f"&filter=from_publication_date:{year}-01-01,to_publication_date:{year}-12-31"
-    url = f"https://api.openalex.org/works?per-page=5&search={quote(title)}{year_filter}"
+    url = f"https://api.openalex.org/works?per-page=5&search={quote(search_query)}{year_filter}"
     try:
         resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
         resp.raise_for_status()
@@ -176,23 +205,24 @@ def search_openalex(title, threshold=DEFAULT_THRESHOLD, year=None):
         return {"error": str(e), "source": "OpenAlex"}
 
 
-def find_doi(title, threshold=DEFAULT_THRESHOLD, year=None):
+def find_doi(title, threshold=DEFAULT_THRESHOLD, year=None, author=None):
     """
     综合查找 DOI：先 Crossref，再 OpenAlex
+    利用标题 + 第一作者 + 年份 进行匹配
     返回 dict: {doi, url, similarity, source, ...} 或 None
     """
     if not title or not str(title).strip():
         return None
 
     # 1️⃣ Crossref
-    result = search_crossref(title, threshold, year)
+    result = search_crossref(title, threshold, year, author)
     if result and "doi" in result and result["doi"]:
         return result
 
     time.sleep(0.15)
 
     # 2️⃣ OpenAlex
-    result2 = search_openalex(title, threshold, year)
+    result2 = search_openalex(title, threshold, year, author)
     if result2 and "doi" in result2 and result2["doi"]:
         return result2
 

@@ -781,6 +781,9 @@ class LiteratureApp:
             headers = list(self.df.columns)
 
             dcn = "DOI" if dc is None else headers[dc]
+            # 检测作者列
+            ac = self.detected.get("author_col")
+            acn = headers[ac] if ac is not None else None
             rows_p = []
             for idx, row in self.df.iterrows():
                 if pd.notna(row.get(dcn)) and str(row.get(dcn)).strip():
@@ -789,7 +792,8 @@ class LiteratureApp:
                 if pd.isna(title) or not str(title).strip():
                     continue
                 yr = extract_year(row.iloc[yc]) if yc is not None else None
-                rows_p.append((idx, str(title).strip(), yr))
+                author = str(row.get(acn, "")) if acn else None
+                rows_p.append((idx, str(title).strip(), yr, author))
 
             total = len(rows_p)
             if total == 0:
@@ -798,7 +802,7 @@ class LiteratureApp:
                 return
 
             workers = min(self.concurrency, total)
-            self._log(f"⚡ 并发获取 DOI — {total} 条 ({workers} 线程) (阈值 {int(threshold*100)}%)", "header")
+            self._log(f"⚡ 并发获取 DOI — {total} 条 ({workers} 线程) (阈值 {int(threshold*100)}%, 标题+作者匹配)", "header")
             self._update_stats(stage=f"🔍 {workers}线程获取中...", doi_total=total)
 
             found = 0
@@ -808,10 +812,10 @@ class LiteratureApp:
             futures_map = {}  # future -> (idx, title)
 
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                for idx, title, year in rows_p:
+                for idx, title, year, author in rows_p:
                     if self.stop_requested:
                         break
-                    future = executor.submit(find_doi, title, threshold, year)
+                    future = executor.submit(find_doi, title, threshold, year, author)
                     futures_map[future] = (idx, title)
 
                 for future in as_completed(futures_map):
@@ -833,13 +837,14 @@ class LiteratureApp:
                             self.df.at[idx, "DOI状态"] = "已匹配"
                             found += 1
                             src = r.get('source', '?')
-                            self._log(f"  ✅ [{src}] {r['doi'][:40]}", "success")
+                            matched = r.get('matched_title', '') or ''
+                            self._log(f"  ✅ [{src}] {r['doi'][:40]} ← {matched[:40]}", "success")
                         else:
                             self.df.at[idx, "DOI状态"] = "获取失败"
                             self.df.at[idx, "匹配度"] = "—"
                             self.df.at[idx, "DOI来源"] = "—"
                             failed += 1
-                            self._log(f"  ❌ {title[:50]}", "error")
+                            self._log(f"  ❌ {title[:60]}", "error")
 
                         pct = (completed / total) * 100
                         self._draw_progress(pct)
