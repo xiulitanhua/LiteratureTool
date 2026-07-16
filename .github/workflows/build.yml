@@ -7,25 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install & Build
-        shell: pwsh
+      - name: Build
         run: |
           pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
-          $src = Join-Path $env:GITHUB_WORKSPACE "文献综合工具"
-          Set-Location $src
-          Write-Host "PWD: $(Get-Location)"
-          Get-ChildItem *.py
-          pyinstaller --onefile --windowed --name app --distpath "$src\dist" --workpath "$src\build" "$src\main.py"
-          Get-ChildItem "$src\dist" -ErrorAction SilentlyContinue
-
+          cd 文献综合工具
+          pyinstaller --onefile --windowed --name app main.py
+          ls dist/
       - uses: actions/upload-artifact@v4
         if: always()
         with:
