@@ -102,12 +102,12 @@ def get_title_abbreviation(title, max_chars=30):
 def fetch_metadata_from_web(doi):
     """
     从 Crossref API 获取文献元数据（期刊缩写、学科/关键词用作研究区域参考）
-    返回 dict: {journal_abbr, subjects, container_title, ...} 或 None
+    优先从摘要中提取地理研究区域
+    返回 dict: {journal_abbr, subjects, research_area, ...} 或 None
     """
     if not doi or str(doi).lower() == 'nan':
         return None
     doi = str(doi).strip()
-    # 清理 DOI 前缀
     doi_clean = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi, flags=re.IGNORECASE)
     url = f"https://api.crossref.org/works/{doi_clean}"
     try:
@@ -122,17 +122,14 @@ def fetch_metadata_from_web(doi):
         if short_titles and short_titles[0]:
             result["journal_abbr"] = short_titles[0].strip()
         else:
-            # 从完整刊名提取缩写
             container = msg.get("container-title", [])
             if container and container[0]:
                 result["journal_abbr"] = get_journal_initials(container[0])
 
-        # 学科 / 主题（用作研究区域参考）
+        # 学科 / 主题
         subjects = msg.get("subject", [])
         if subjects:
             result["subjects"] = [s for s in subjects if s]
-            # 选第一个有意义的学科作为研究区域
-            result["research_area"] = result["subjects"][0] if result["subjects"] else ""
 
         # 关键词
         keywords = []
@@ -145,24 +142,86 @@ def fetch_metadata_from_web(doi):
                 keywords.append(kw)
         if keywords:
             result["keywords"] = keywords
-            if not result.get("research_area"):
-                result["research_area"] = keywords[0]
+
+        # 摘要
+        abstract = msg.get("abstract", "")
+        if abstract:
+            abstract = re.sub(r'<[^>]+>', '', abstract)
+            result["abstract"] = abstract
+
+        # ★ 研究区域：优先从摘要提取地理位置，其次关键词，最后学科
+        research_area = ""
+        # 1) 从摘要中提取
+        if abstract:
+            research_area = _extract_geo_from_text(abstract)
+        # 2) 从关键词中提取
+        if not research_area and keywords:
+            research_area = extract_research_area_from_text("", "; ".join(keywords))
+        # 3) 从标题中提取（由调用方传入的 title）
+        # 4) 都不行则用第一个关键词或学科
+        if not research_area and keywords:
+            research_area = keywords[0][:50]
+        if not research_area and subjects:
+            # 选最短但有意义的学科
+            meaningful = [s for s in subjects if 3 < len(s) < 60]
+            research_area = meaningful[0] if meaningful else subjects[0][:50]
+        result["research_area"] = research_area[:60]
 
         # 发布者
         publisher = msg.get("publisher", "")
         if publisher:
             result["publisher"] = publisher
 
-        # 摘要（可用于提取研究区域）
-        abstract = msg.get("abstract", "")
-        if abstract:
-            # 清理 HTML 标签
-            abstract = re.sub(r'<[^>]+>', '', abstract)
-            result["abstract"] = abstract[:500]
-
         return result if result else None
     except Exception:
         return None
+
+
+def _extract_geo_from_text(text):
+    """
+    从文本中提取地理位置信息（流域、地区、国家等）
+    """
+    if not text:
+        return ""
+    text = str(text)
+
+    # 英文地理短语：大写词 + 地理后缀
+    eng_patterns = [
+        r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s+(River|Basin|Lake|Mountain|Forest|Wetland|Grassland|'
+        r'Delta|Plateau|Watershed|Catchment|Estuary|Coast|Bay|Sea|Ocean|'
+        r'Region|Area|City|Province|County|District|Valley|Plain|Hills|Island|Peninsula)\b',
+    ]
+    for pat in eng_patterns:
+        m = re.search(pat, text)
+        if m:
+            return m.group(0).strip()  # 返回完整匹配
+
+    # 中文地理短语（长匹配优先）
+    cn_patterns = [
+        # 通用：X+地理后缀（2-6字前缀 + 地理后缀，优先长匹配）
+        r'([\u4e00-\u9fa5]{2,6}(?:流域|盆地|湖泊|山区|森林|湿地|草地|草原|三角洲|'
+        r'高原|沿海|海洋|地区|区域|省份|河谷|平原|丘陵|岛屿|半岛))',
+        # 知名区域
+        r'(青藏高原|黄土高原|内蒙古高原|华北平原|东北平原|长江中下游|'
+        r'华北地区|东北地区|华南地区|华东地区|华中地区|西南地区|西北地区)',
+        # 主要河流湖泊（不含已匹配的流域组合）
+        r'(长江|黄河|珠江|洞庭湖|鄱阳湖|松花江|淮河|海河|辽河|'
+        r'青海湖)',
+        # 独立地理名词
+        r'(太湖|巢湖|洪泽湖|呼伦湖|纳木错)',
+        # 国家/大洲
+        r'(中国|美国|英国|法国|德国|日本|印度|巴西|加拿大|澳大利亚|'
+        r'亚洲|欧洲|非洲|美洲|大洋洲)',
+    ]
+    for pat in cn_patterns:
+        m = re.search(pat, text)
+        if m:
+            result = m.group(0).strip()
+            # 去除中文前导虚词（对、在、于、的、和、与、及、从、被、把）
+            result = re.sub(r'^[对在于的从和与及被把以用由向到]+', '', result)
+            return result
+
+    return ""
 
 
 def extract_metadata_from_pdf(pdf_path):
@@ -192,9 +251,11 @@ def extract_metadata_from_pdf(pdf_path):
                     result["keywords"] = str(pdf_keywords).strip()
 
             # 若元数据不够，尝试从第一页文本提取
-            if not result.get("research_area") and len(reader.pages) > 0:
+            first_page_text = ""
+            if len(reader.pages) > 0:
                 try:
                     first_page_text = reader.pages[0].extract_text() or ""
+                    result["first_page_text"] = first_page_text[:2000]
                     # 尝试找 Keywords / 关键词 行
                     kw_match = re.search(
                         r'(?:Keywords|Key words|关键词|关键字)[\s:：]*(.+?)(?:\n|$)',
@@ -203,7 +264,8 @@ def extract_metadata_from_pdf(pdf_path):
                     if kw_match:
                         kws = kw_match.group(1).strip()
                         result["keywords"] = kws[:100]
-                        result["research_area"] = kws.split(';')[0].split(',')[0].strip()[:50]
+                        if not result.get("research_area"):
+                            result["research_area"] = kws.split(';')[0].split(',')[0].strip()[:50]
 
                     # 如果标题未知，尝试从前几行提取
                     if not result.get("pdf_title"):
@@ -250,6 +312,43 @@ def extract_research_area_from_text(text, keywords=None):
     return ""
 
 
+def _extract_year_value(year_val):
+    """从各种格式中稳健提取年份：datetime、字符串、浮点数等"""
+    if year_val is None:
+        return None
+    try:
+        # pandas Timestamp / datetime
+        if hasattr(year_val, 'year'):
+            return int(year_val.year)
+    except Exception:
+        pass
+    try:
+        # datetime-like 对象
+        import datetime as dt
+        if isinstance(year_val, dt.datetime):
+            return int(year_val.year)
+    except Exception:
+        pass
+    # 字符串处理
+    s = str(year_val).strip()
+    if not s or s.lower() == 'nan':
+        return None
+    # 尝试直接转整数
+    try:
+        y = int(float(s))
+        if 1900 <= y <= 2100:
+            return y
+    except (ValueError, TypeError):
+        pass
+    # 正则提取 4 位年份
+    m = re.search(r'(\d{4})', s)
+    if m:
+        y = int(m.group(1))
+        if 1900 <= y <= 2100:
+            return y
+    return None
+
+
 def build_filename(row, research_area=""):
     """
     构建 PDF 文件名
@@ -258,12 +357,10 @@ def build_filename(row, research_area=""):
     """
     last_name = get_author_lastname(row.get("AUTHOR", ""))
 
-    # 年份
+    # 年份 — 稳健提取
     year_val = row.get("YEAR", "")
-    try:
-        year_str = str(int(float(year_val))) if year_val and str(year_val).lower() != 'nan' else "Year"
-    except (ValueError, TypeError):
-        year_str = "Year"
+    year_num = _extract_year_value(year_val)
+    year_str = str(year_num) if year_num else "Year"
 
     # 期刊首字母缩写
     journal_abbr = row.get("JOURNAL_ABBR", "")
@@ -319,20 +416,38 @@ def try_rename_pdf_with_metadata(old_path, row, doi="", save_dir=""):
         if pdf_meta:
             if source_used == "表格":
                 source_used = "PDF元数据"
-            # 从 PDF 提取的关键词中获取研究区域
             if pdf_meta.get("research_area"):
                 research_area = pdf_meta["research_area"]
                 row["RESEARCH_AREA"] = research_area
             elif pdf_meta.get("keywords"):
                 research_area = extract_research_area_from_text("", pdf_meta["keywords"])
                 row["RESEARCH_AREA"] = research_area
+            # 也从 PDF 第一页文本提取地理位置
+            if (not research_area or research_area == "Area") and pdf_meta.get("first_page_text"):
+                geo = _extract_geo_from_text(pdf_meta["first_page_text"])
+                if geo:
+                    research_area = geo
+                    row["RESEARCH_AREA"] = research_area
 
-    # 3️⃣ 如果还没有研究区域，尝试从标题中提取
+    # 3️⃣ 网页摘要提取地理（兜底）
+    if (not research_area or research_area == "Area") and web_meta and web_meta.get("abstract"):
+        geo = _extract_geo_from_text(web_meta["abstract"])
+        if geo:
+            research_area = geo
+            row["RESEARCH_AREA"] = research_area
+
+    # 4️⃣ 标题兜底
     if not research_area or research_area == "Area":
         title = str(row.get("title", ""))
         research_area = extract_research_area_from_text(title)
         if research_area:
             row["RESEARCH_AREA"] = research_area
+        # 也从标题提取地理位置
+        if not research_area or research_area == "Area":
+            geo = _extract_geo_from_text(title)
+            if geo:
+                research_area = geo
+                row["RESEARCH_AREA"] = research_area
 
     # 构建新文件名
     new_filename = build_filename(row, research_area)
