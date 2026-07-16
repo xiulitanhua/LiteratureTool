@@ -20,29 +20,17 @@ jobs:
           python-version: '3.12'
 
       - name: Install deps
-        shell: pwsh
         run: |
-          Set-Location 文献综合工具
+          cd 文献综合工具
           python -m pip install --upgrade pip
-          pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
-          Write-Host "=== Installed packages ==="
-          pip list | Select-String "pandas|requests|PyPDF2|pyinstaller|beautifulsoup4|openpyxl"
+          pip install pandas requests beautifulsoup4 openpyxl PyPDF2
+          pip install pyinstaller
 
       - name: Build
-        shell: pwsh
         run: |
-          Set-Location 文献综合工具
-          Write-Host "Current dir: $(Get-Location)"
-          Write-Host "Files: $(Get-ChildItem *.py | ForEach-Object { $_.Name })"
-          pyinstaller --onefile --windowed --name app --distpath dist --workpath build --specpath build main.py
-          if (Test-Path dist/app.exe) {
-            Rename-Item dist/app.exe "文献综合工具.exe"
-            Write-Host "=== Build success ==="
-          } else {
-            Write-Host "=== Build FAILED, listing dist ==="
-            Get-ChildItem dist -Recurse
-            exit 1
-          }
+          cd 文献综合工具
+          pyinstaller --onefile --windowed --name wenxian --distpath dist --workpath build main.py
+          if exist dist\wenxian.exe (ren dist\wenxian.exe "文献综合工具.exe")
 
       - uses: actions/upload-artifact@v4
         with:
