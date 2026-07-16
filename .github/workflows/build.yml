@@ -7,20 +7,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Build
+        shell: pwsh
         run: |
           pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
-          cd 文献综合工具
-          pyinstaller --onefile --windowed --name app main.py
-          ls dist/
+          $src = "$env:GITHUB_WORKSPACE\文献综合工具"
+          pyinstaller --onefile --windowed --name app --distpath "$src\dist" --workpath "$src\build" "$src\main.py"
+          Get-ChildItem "$src\dist"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: dist
-          path: 文献综合工具/dist/
+          path: |
+            文献综合工具/dist/app.exe
