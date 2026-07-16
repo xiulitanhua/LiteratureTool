@@ -5,45 +5,28 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install deps
+      - name: Install
         shell: pwsh
         run: |
-          Set-Location "${{ github.workspace }}/文献综合工具"
-          python -m pip install --upgrade pip
+          cd "${{ github.workspace }}/文献综合工具"
           pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
-
       - name: Build
         shell: pwsh
         run: |
-          Set-Location "${{ github.workspace }}/文献综合工具"
-          Write-Host "PWD: $(Get-Location)"
-          Get-ChildItem *.py | ForEach-Object { Write-Host "  $_" }
-          pyinstaller --onefile --windowed --name wenxian --distpath dist --workpath build main.py
-          if (Test-Path dist/wenxian.exe) {
-            Rename-Item dist/wenxian.exe "文献综合工具.exe"
-            Write-Host "Build OK"
-          } else {
-            Write-Host "Build FAILED"
-            Get-ChildItem dist -Recurse -ErrorAction SilentlyContinue
-            exit 1
-          }
-
+          cd "${{ github.workspace }}/文献综合工具"
+          pyinstaller --onefile --windowed --name wenxian --distpath dist --workpath build main.py 2>&1
+          if (Test-Path dist/wenxian.exe) { Rename-Item dist/wenxian.exe 文献综合工具.exe }
+          Get-ChildItem dist
       - uses: actions/upload-artifact@v4
-        if: success()
+        if: always()
         with:
-          name: exe
-          path: 文献综合工具/dist/文献综合工具.exe
+          name: build-result
+          path: 文献综合工具/dist/
