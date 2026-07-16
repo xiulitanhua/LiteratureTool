@@ -1,6 +1,6 @@
 {
-  "version": "20260629-0817",
-  "download_url": "https://github.com/xiulitanhua/LiteratureTool/releases/latest/download/wenxian_gongju.exe",
-  "app_name": "文献综合工具",
-  "release_notes": "https://github.com/xiulitanhua/LiteratureTool/releases/latest"
+  "version": "20260716-1500",
+  "download_url": "https://github.com/xiulitanhua/LiteratureTool/raw/main/%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7/dist/%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7.exe",
+  "app_name": "文献综合工具 v3.4",
+  "release_notes": "v3.4: PDF命名格式优化——作者_年份_期刊首字母缩写_研究区域_题名简写.pdf；网页/Python元数据提取与自动重命名"
 }
