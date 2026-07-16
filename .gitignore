@@ -2,9 +2,12 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
 build/
 *.spec
+
+# dist — 只保留 exe 文件
+dist/*
+!dist/*.exe
 
 # Virtual environment
 .venv/
