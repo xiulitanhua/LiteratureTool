@@ -9,7 +9,8 @@ from tkinter import ttk, messagebox
 import requests
 
 VERSION_URL = "https://raw.githubusercontent.com/xiulitanhua/LiteratureTool/main/version.json"
-REPO_DOWNLOAD_URL = ("https://github.com/xiulitanhua/LiteratureTool/raw/main/dist/"
+REPO_DOWNLOAD_URL = ("https://github.com/xiulitanhua/LiteratureTool/raw/main/"
+                     "%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7/dist/"
                      "%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7.exe")
 CHECK_TIMEOUT = 8
 MAX_RETRIES = 2
