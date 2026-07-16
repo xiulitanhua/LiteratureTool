@@ -1,32 +1,37 @@
 name: Build EXE
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, master]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Show structure
+        shell: pwsh
+        run: |
+          Write-Host "=== Workspace ==="
+          Get-ChildItem -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName.Replace($env:GITHUB_WORKSPACE, '.') }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install
         shell: pwsh
         run: |
-          cd "${{ github.workspace }}/文献综合工具"
           pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
       - name: Build
         shell: pwsh
         run: |
-          cd "${{ github.workspace }}/文献综合工具"
-          pyinstaller --onefile --windowed --name wenxian --distpath dist --workpath build main.py 2>&1
-          if (Test-Path dist/wenxian.exe) { Rename-Item dist/wenxian.exe 文献综合工具.exe }
-          Get-ChildItem dist
+          cd 文献综合工具
+          Write-Host "=== Building ==="
+          pyinstaller --onefile --windowed --name app main.py
+          Write-Host "=== dist ==="
+          Get-ChildItem dist -Recurse -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-result
+          name: dist
           path: 文献综合工具/dist/
