@@ -3,9 +3,6 @@ name: Build and Release EXE
 on:
   push:
     branches: [main, master]
-    paths-ignore:
-      - 'README.md'
-      - 'Downloaded_PDFs/**'
   workflow_dispatch:
 
 permissions:
@@ -14,10 +11,6 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
-    defaults:
-      run:
-        working-directory: 文献综合工具
 
     steps:
       - name: Checkout code
@@ -29,10 +22,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
+        shell: pwsh
         run: |
+          cd 文献综合工具
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pandas requests beautifulsoup4 openpyxl PyPDF2 pyinstaller
 
       - name: Get version
         id: version
@@ -52,15 +46,14 @@ jobs:
             download_url = "https://github.com/${{ github.repository }}/releases/latest/download/wenxian_gongju.exe"
             release_notes = "https://github.com/${{ github.repository }}/releases/latest"
           } | ConvertTo-Json
-          $root = "${{ github.workspace }}"
-          [System.IO.File]::WriteAllText("$root\version.json", $json, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("version.json", $json, [System.Text.UTF8Encoding]::new($false))
           Write-Host "Root version.json updated"
 
       - name: Inject version into source
         shell: pwsh
         run: |
           $ver = "${{ steps.version.outputs.version }}"
-          $file = "main.py"
+          $file = "文献综合工具/main.py"
           $content = [System.IO.File]::ReadAllText($file, [System.Text.UTF8Encoding]::new($false))
           $content = $content -replace 'CURRENT_VERSION\s*=\s*"[^"]*"', "CURRENT_VERSION = `"$ver`""
           [System.IO.File]::WriteAllText($file, $content, [System.Text.UTF8Encoding]::new($false))
@@ -69,8 +62,16 @@ jobs:
       - name: Build EXE
         shell: pwsh
         run: |
+          cd 文献综合工具
           $env:PYTHONUTF8 = 1
-          pyinstaller --onefile --windowed --name 文献综合工具 --distpath dist --workpath build --specpath build main.py
+          pyinstaller --onefile --windowed --name wenxian --distpath dist --workpath build --specpath build main.py
+          if (Test-Path dist/wenxian.exe) {
+            Rename-Item -Path dist/wenxian.exe -NewName "文献综合工具.exe"
+          }
+          if (-not (Test-Path "dist/文献综合工具.exe")) {
+            Write-Error "EXE build failed!"
+            exit 1
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -80,19 +81,13 @@ jobs:
           retention-days: 7
 
       - name: Create Release
-        id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: Release ${{ steps.version.outputs.version }}
           body: |
             ## Auto Build
-
-            **Build time**: ${{ github.event.head_commit.timestamp }}
             **Commit**: ${{ github.event.head_commit.message }}
-
-            ### Download
-            点击下方 `wenxian_gongju.exe` 下载
           files: 文献综合工具/dist/文献综合工具.exe
           draft: false
           prerelease: false
