@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/*
+!dist/文献综合工具.exe
+*.spec.bak
+*.spec~
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output files (generated at runtime)
+Downloaded_PDFs/
+*_已加DOI.xlsx
+*_WithLinks.xlsx
+*_doi_results.json

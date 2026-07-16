@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Downloaded PDFs
+Downloaded_PDFs/
+
+# Excel output
+*_已加DOI.xlsx
+*_WithLinks.xlsx
+*_报告.html
+
+# OS
+.DS_Store
+Thumbs.db
