@@ -1,0 +1,98 @@
+name: Build and Release EXE
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'README.md'
+      - 'Downloaded_PDFs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: 文献综合工具
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = Get-Date -Format "yyyyMMdd-HHmm"
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "VERSION=$ver"
+
+      - name: Update root version.json
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $json = @{
+            version = $ver
+            app_name = "文献综合工具"
+            download_url = "https://github.com/${{ github.repository }}/releases/latest/download/wenxian_gongju.exe"
+            release_notes = "https://github.com/${{ github.repository }}/releases/latest"
+          } | ConvertTo-Json
+          $root = "${{ github.workspace }}"
+          [System.IO.File]::WriteAllText("$root\version.json", $json, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Root version.json updated"
+
+      - name: Inject version into source
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $file = "main.py"
+          $content = [System.IO.File]::ReadAllText($file, [System.Text.UTF8Encoding]::new($false))
+          $content = $content -replace 'CURRENT_VERSION\s*=\s*"[^"]*"', "CURRENT_VERSION = `"$ver`""
+          [System.IO.File]::WriteAllText($file, $content, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Version injected: $ver"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = 1
+          pyinstaller --onefile --windowed --name 文献综合工具 --distpath dist --workpath build --specpath build main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wenxian-tool
+          path: 文献综合工具/dist/文献综合工具.exe
+          retention-days: 7
+
+      - name: Create Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: |
+            ## Auto Build
+
+            **Build time**: ${{ github.event.head_commit.timestamp }}
+            **Commit**: ${{ github.event.head_commit.message }}
+
+            ### Download
+            点击下方 `wenxian_gongju.exe` 下载
+          files: 文献综合工具/dist/文献综合工具.exe
+          draft: false
+          prerelease: false
