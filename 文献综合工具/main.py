@@ -1,5 +1,5 @@
 """
-文献综合处理工具 v3.3 —— 一站式 DOI 获取 + PDF 下载
+LitBox v3.4 - Literature Collector
 浅色科研数据表格中心界面
 """
 
@@ -12,11 +12,21 @@ import pandas as pd
 
 from doi_fetcher import find_doi, extract_year, normalize_text, DEFAULT_THRESHOLD
 from pdf_downloader import download_all, build_filename, clean_filename
+from pdf_renamer import scan_pdf_folder, apply_renames
 from updater import check_for_update
 from report import generate_report
 
 # 当前版本号（格式: yyyyMMdd-HHmm，与 GitHub version.json 对比）
-CURRENT_VERSION = "20260716-1500"
+CURRENT_VERSION = "20260802-1200"
+
+APP_NAME = "LitBox"
+APP_SUBTITLE = "Literature Collector"
+
+
+def resource_path(relative_path):
+    """获取开发环境或 PyInstaller 打包后的资源路径。"""
+    base_path = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+    return os.path.join(base_path, relative_path)
 
 # ═══════════════ 主题色板 (浅色科研软件风格) ═══════════════
 
@@ -73,7 +83,7 @@ def detect_columns(df):
 class LiteratureApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("文献综合处理工具")
+        self.root.title(f"{APP_NAME} - {APP_SUBTITLE}")
         self.root.geometry("1280x760")
         self.root.minsize(1080, 640)
         self.root.configure(bg=C["bg_dark"])
@@ -86,6 +96,7 @@ class LiteratureApp:
         self.stop_requested = False
         self.df = None
         self.detected = None
+        self.pdf_rename_results = []
 
         self.stats_doi_total = tk.StringVar(value="—")
         self.stats_doi_found = tk.StringVar(value="—")
@@ -97,9 +108,10 @@ class LiteratureApp:
         self.sidebar_btns = []
         self.current_page = tk.StringVar(value="overview")
 
+        self._set_window_icon(self.root)
         self._build_ui()
-        self._log("文献综合处理工具 v3.3", "header")
-        self._log("Excel → DOI 获取 → PDF 下载，当前界面以文献表格核对为中心。")
+        self._log(f"{APP_NAME} v3.4", "header")
+        self._log("Excel → DOI 获取 → PDF 下载 → 智能命名，当前界面以文献表格核对为中心。")
 
         # 后台检查更新
         check_for_update(self.root, CURRENT_VERSION, log_callback=self._log)
@@ -122,6 +134,14 @@ class LiteratureApp:
         self._build_settings_page()
 
         self._switch_page("overview")
+
+    def _set_window_icon(self, window):
+        try:
+            icon = tk.PhotoImage(file=resource_path(os.path.join("assets", "wenxian_yunxia.png")))
+            window.iconphoto(True, icon)
+            window._app_icon = icon
+        except Exception:
+            pass
 
     def _style_sidebar_btn(self, btn, active):
         if active:
@@ -149,14 +169,15 @@ class LiteratureApp:
 
         header = tk.Frame(p, bg=C["bg_dark"])
         header.pack(fill=tk.X, padx=18, pady=(16, 10))
-        tk.Label(header, text="文献数据核对台", font=(FONT, 18, "bold"),
+        tk.Label(header, text=APP_NAME, font=(FONT, 18, "bold"),
                  fg=C["text"], bg=C["bg_dark"]).pack(side=tk.LEFT)
-        tk.Label(header, text="Excel 文献表 → DOI 匹配 → PDF 下载",
+        tk.Label(header, text="Excel → DOI → PDF → 规范命名",
                  font=(FONT, 10), fg=C["text_dim"], bg=C["bg_dark"]).pack(side=tk.LEFT, padx=(14, 0), pady=(5, 0))
 
         nav = tk.Frame(header, bg=C["bg_dark"])
         nav.pack(side=tk.RIGHT)
         self._make_button(nav, "总览", lambda: self._switch_page("overview"), kind="ghost").pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(nav, "使用教程", self._show_tutorial, kind="ghost").pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(nav, "设置", lambda: self._switch_page("settings"), kind="ghost").pack(side=tk.LEFT)
 
         toolbar = tk.Frame(p, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
@@ -175,6 +196,8 @@ class LiteratureApp:
         self.btn_stop.pack(side=tk.RIGHT, padx=(6, 0))
         self.btn_open = self._make_button(toolbar_inner, "打开输出目录", self._open_output_dir, kind="secondary")
         self.btn_open.pack(side=tk.RIGHT, padx=(6, 0))
+        self.btn_rename_pdf = self._make_button(toolbar_inner, "PDF 重命名", self._start_pdf_rename, kind="secondary")
+        self.btn_rename_pdf.pack(side=tk.RIGHT, padx=(6, 0))
         self.btn_download = self._make_button(toolbar_inner, "下载 PDF", self._start_download_pdf, kind="secondary")
         self.btn_download.pack(side=tk.RIGHT, padx=(6, 0))
         self.btn_fetch_doi = self._make_button(toolbar_inner, "获取 DOI", self._start_fetch_doi, kind="secondary")
@@ -298,6 +321,116 @@ class LiteratureApp:
         self.log_area.tag_config("muted", foreground=C["text_dim"])
         self.log_area.tag_config("header", foreground=C["accent2"], font=(MONO, 9, "bold"))
 
+    # ═══════════════ 使用教程 ═══════════════
+
+    def _show_tutorial(self):
+        win = tk.Toplevel(self.root)
+        win.title(f"{APP_NAME} - 使用教程")
+        win.geometry("900x620")
+        win.minsize(780, 540)
+        win.configure(bg=C["bg_dark"])
+        win.transient(self.root)
+        self._set_window_icon(win)
+
+        header = tk.Frame(win, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="使用教程", font=(FONT, 18, "bold"), fg=C["text"],
+                 bg=C["bg_card"]).pack(side=tk.LEFT, padx=22, pady=16)
+        tk.Label(header, text="从清单到规范命名 PDF", font=(FONT, 10), fg=C["text_dim"],
+                 bg=C["bg_card"]).pack(side=tk.LEFT, pady=(20, 16))
+        self._make_button(header, "关闭", win.destroy, kind="ghost").pack(side=tk.RIGHT, padx=18, pady=12)
+
+        body = tk.Frame(win, bg=C["bg_dark"])
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+        sidebar = tk.Frame(body, width=210, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        content = tk.Frame(body, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+
+        steps = [
+            ("开始前准备", "准备 Excel 文献清单", [
+                "Excel 至少需要一列文献标题；建议同时包含作者、年份、期刊和 DOI。",
+                "一行对应一篇文献。表头可使用“题名、作者、年份、期刊、DOI”等常见名称。",
+                "先在总览页设置输出目录，所有结果表格、PDF 和报告都会保存在那里。",
+            ]),
+            ("导入与检查", "导入 Excel 并检查字段", [
+                "点击“选择 Excel”，软件会读取清单并在文献列表中显示。",
+                "点击“检测字段”确认标题、作者、年份、期刊和 DOI 是否识别正确。",
+                "如果标题列未识别，请把 Excel 表头改为“标题”或“题名”后重新导入。",
+            ]),
+            ("获取 DOI", "为文献匹配 DOI", [
+                "点击“获取 DOI”，软件会根据标题在线匹配文献信息。",
+                "匹配度越高，结果通常越可靠；设置页可调整 DOI 标题匹配阈值。",
+                "完成后会生成“_已加DOI.xlsx”，未匹配项目会保留，方便人工核对。",
+            ]),
+            ("下载 PDF", "批量搜集 PDF", [
+                "确认清单中已有 DOI 后，点击“下载 PDF”。",
+                "PDF 默认保存在输出目录的 Downloaded_PDFs 文件夹，并同步生成带链接的 Excel。",
+                "部分文献受访问权限或网络限制可能无法下载，请根据日志中的失败记录补充处理。",
+            ]),
+            ("智能命名", "统一整理现有 PDF", [
+                "先导入对应的 Excel 清单，再点击“PDF 重命名”并选择 PDF 文件夹。",
+                "软件优先使用 Excel 的作者、年份和期刊，再从 PDF 或 DOI 补全缺失信息。",
+                "命名格式为：作者_年份_期刊缩写_研究区域_题名简写.pdf。",
+                "预览窗口只展示结果；点击“确认重命名”后才会真正修改文件名。",
+            ]),
+            ("常见问题", "结果不完整时怎么处理", [
+                "没有年份：检查 Excel 年份列；若 PDF 是扫描件且没有文字层，自动读取可能失败。",
+                "期刊缩写异常：优先在 Excel 中填写完整期刊名，软件会提取首字母缩写。",
+                "文件没有匹配：确保 Excel 标题与 PDF 首页题名接近，或在清单中补充 DOI。",
+                "建议先用少量文件测试并核对预览，再处理整个文件夹。",
+            ]),
+        ]
+
+        step_buttons = []
+
+        def show_step(index):
+            for child in content.winfo_children():
+                child.destroy()
+            for i, button in enumerate(step_buttons):
+                if i == index:
+                    button.configure(bg="#dbeafe", fg=C["accent"])
+                else:
+                    button.configure(bg=C["bg_card"], fg=C["text_dim"])
+
+            short, title, points = steps[index]
+            tk.Label(content, text=f"步骤 {index + 1} / {len(steps)}", font=(FONT, 9, "bold"),
+                     fg=C["accent"], bg=C["bg_card"]).pack(anchor=tk.W, padx=28, pady=(28, 6))
+            tk.Label(content, text=title, font=(FONT, 20, "bold"), fg=C["text"],
+                     bg=C["bg_card"]).pack(anchor=tk.W, padx=28)
+            tk.Frame(content, height=1, bg=C["border"]).pack(fill=tk.X, padx=28, pady=20)
+
+            for number, point in enumerate(points, start=1):
+                row = tk.Frame(content, bg=C["bg_card"])
+                row.pack(fill=tk.X, padx=28, pady=8)
+                badge = tk.Label(row, text=str(number), font=(FONT, 9, "bold"), width=3, height=1,
+                                 fg=C["white"], bg=C["accent"])
+                badge.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 12))
+                tk.Label(row, text=point, font=(FONT, 10), fg=C["text"], bg=C["bg_card"],
+                         justify=tk.LEFT, anchor=tk.W, wraplength=520).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            footer = tk.Frame(content, bg=C["bg_card"])
+            footer.pack(side=tk.BOTTOM, fill=tk.X, padx=28, pady=24)
+            if index > 0:
+                self._make_button(footer, "上一步", lambda: show_step(index - 1), kind="secondary").pack(side=tk.LEFT)
+            if index < len(steps) - 1:
+                self._make_button(footer, "下一步", lambda: show_step(index + 1), kind="primary").pack(side=tk.RIGHT)
+            else:
+                self._make_button(footer, "开始使用", lambda: (win.destroy(), self._switch_page("overview")),
+                                  kind="primary").pack(side=tk.RIGHT)
+
+        tk.Label(sidebar, text="操作流程", font=(FONT, 10, "bold"), fg=C["text"],
+                 bg=C["bg_card"]).pack(anchor=tk.W, padx=16, pady=(18, 10))
+        for index, (short, _, _) in enumerate(steps):
+            button = tk.Button(sidebar, text=f"{index + 1}.  {short}", command=lambda i=index: show_step(i),
+                               font=(FONT, 9), bg=C["bg_card"], fg=C["text_dim"],
+                               activebackground=C["bg_hover"], activeforeground=C["text"],
+                               relief=tk.FLAT, cursor="hand2", anchor=tk.W, padx=16, pady=11)
+            button.pack(fill=tk.X)
+            step_buttons.append(button)
+
+        show_step(0)
     # ═══════════════ 设置页 ═══════════════
 
     def _build_settings_page(self):
@@ -678,7 +811,7 @@ class LiteratureApp:
         self._set_buttons_state(tk.DISABLED)
 
     def _set_buttons_state(self, state):
-        for btn in [self.btn_detect, self.btn_fetch_doi, self.btn_download, self.btn_all]:
+        for btn in [self.btn_detect, self.btn_fetch_doi, self.btn_download, self.btn_all, self.btn_rename_pdf]:
             btn.config(state=state)
         self.btn_stop.config(state=tk.NORMAL if state == tk.DISABLED else tk.DISABLED)
 
@@ -699,6 +832,195 @@ class LiteratureApp:
         if doi_failed is not None: self.stats_doi_failed.set(str(doi_failed))
         if pdf_done is not None: self.stats_pdf_done.set(str(pdf_done))
 
+    # ═══════════════ 本地 PDF 重命名 ═══════════════
+
+    def _find_optional_column(self, candidates):
+        if self.df is None:
+            return None
+        headers = list(self.df.columns)
+        lowered = {str(h).lower(): h for h in headers}
+        for name in candidates:
+            if name in headers:
+                return name
+            if str(name).lower() in lowered:
+                return lowered[str(name).lower()]
+        for h in headers:
+            hl = str(h).lower()
+            for name in candidates:
+                if str(name).lower() in hl:
+                    return h
+        return None
+
+    def _pdf_link_basename(self, value):
+        text = str(value or "").strip()
+        if not text or text.lower() == "nan":
+            return ""
+        m = re.search(r'HYPERLINK\("([^"]+)"', text, re.IGNORECASE)
+        if m:
+            text = m.group(1)
+        return os.path.basename(text.replace("/", os.sep))
+
+    def _pdf_rename_excel_rows(self):
+        """把当前 Excel 表转成 PDF 命名可用的标准字段。"""
+        if self.df is None:
+            return []
+        tcn = self._resolve_column("title_col")
+        ycn = self._resolve_column("year_col")
+        acn = self._resolve_column("author_col")
+        jcn = self._resolve_column("journal_col")
+        dcn = self._doi_column_for_display()
+        area_col = self._find_optional_column(["RESEARCH_AREA", "研究区域", "研究区", "区域", "地区", "研究地点", "Study area"] )
+        abbr_col = self._find_optional_column(["JOURNAL_ABBR", "期刊缩写", "刊名缩写", "缩写", "Journal Abbr"] )
+        pdf_col = self._find_optional_column(["PDF链接", "PDF路径", "PDF文件", "PDF", "文件名", "File", "Filename"] )
+
+        rows = []
+        for _, row in self.df.iterrows():
+            item = {
+                "title": self._cell_text(row, tcn),
+                "AUTHOR": self._cell_text(row, acn),
+                "YEAR": self._cell_text(row, ycn),
+                "JOURNAL": self._cell_text(row, jcn),
+                "DOI": self._cell_text(row, dcn),
+                "RESEARCH_AREA": self._cell_text(row, area_col),
+                "JOURNAL_ABBR": self._cell_text(row, abbr_col),
+                "PDF_NAME": self._pdf_link_basename(self._cell_text(row, pdf_col)),
+            }
+            if any(str(v).strip() for v in item.values()):
+                rows.append(item)
+        return rows
+
+
+    def _start_pdf_rename(self):
+        if self.running:
+            messagebox.showinfo("提示", "正在运行中")
+            return
+        if self.df is None or self.detected is None:
+            if not self.input_path.get() or not os.path.isfile(self.input_path.get()):
+                path = filedialog.askopenfilename(
+                    title="先选择包含作者/年份/期刊的 Excel 文件",
+                    filetypes=[("Excel 文件", "*.xlsx *.xls"), ("所有文件", "*.*")])
+                if not path:
+                    return
+                self.input_path.set(path)
+                self.file_label.config(text=os.path.basename(path))
+            self._detect_columns(True)
+            if self.df is None:
+                return
+
+        excel_rows = self._pdf_rename_excel_rows()
+        if not excel_rows:
+            messagebox.showwarning("提示", "Excel 中没有可用于命名的文献信息")
+            return
+
+        folder = filedialog.askdirectory(title="选择需要重命名的 PDF 文件夹")
+        if not folder:
+            return
+        self._set_buttons_state(tk.DISABLED)
+        self.stop_requested = False
+        self.running = True
+        self.pdf_rename_results = []
+        self._update_stats(stage="🔎 Excel 匹配 PDF...", pdf_done=0)
+        self._log(f"🔎 使用 Excel 元数据 {len(excel_rows)} 条，扫描 PDF 文件夹: {folder}", "header")
+        threading.Thread(target=self._scan_pdf_rename_thread, args=(folder, excel_rows), daemon=True).start()
+
+
+    def _scan_pdf_rename_thread(self, folder, excel_rows):
+        try:
+            def cb(cur, total, item):
+                if total:
+                    self._draw_progress((cur / total) * 100)
+                self.status_var.set(f"PDF 命名预览: {cur}/{total}")
+                old_name = item.get("old_name", "")
+                new_name = item.get("new_name", "")
+                if new_name:
+                    self._log(f"  {cur}. {old_name} → {new_name}", "info")
+                else:
+                    self._log(f"  {cur}. {old_name} 识别失败", "warn")
+                self.root.update_idletasks()
+
+            results = scan_pdf_folder(folder, recursive=False, progress_callback=cb, excel_rows=excel_rows)
+            self.pdf_rename_results = results
+            self._draw_progress(100)
+            self.status_var.set(f"PDF 命名预览完成: {len(results)} 个文件")
+            self._update_stats(stage="✅ 命名预览完成", pdf_done=len(results))
+            self.root.after(0, self._show_pdf_rename_preview)
+        except Exception as e:
+            self._log(f"PDF 重命名预览错误: {e}", "error")
+            messagebox.showerror("错误", str(e))
+        finally:
+            self.running = False
+            self.root.after(0, lambda: self._set_buttons_state(tk.NORMAL))
+
+    def _show_pdf_rename_preview(self):
+        if not self.pdf_rename_results:
+            messagebox.showinfo("提示", "未找到 PDF 文件")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("PDF 重命名预览")
+        win.geometry("980x520")
+        win.configure(bg=C["bg_dark"])
+        win.transient(self.root)
+
+        header = tk.Frame(win, bg=C["bg_dark"])
+        header.pack(fill=tk.X, padx=14, pady=(14, 8))
+        tk.Label(header, text="PDF 重命名预览", font=(FONT, 16, "bold"),
+                 fg=C["text"], bg=C["bg_dark"]).pack(side=tk.LEFT)
+        tk.Label(header, text="确认后才会真正修改文件名", font=(FONT, 9),
+                 fg=C["text_dim"], bg=C["bg_dark"]).pack(side=tk.LEFT, padx=(12, 0), pady=(5, 0))
+
+        body = tk.Frame(win, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 10))
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+
+        cols = ("idx", "old", "new", "doi", "source", "title")
+        tree = ttk.Treeview(body, columns=cols, show="headings", selectmode="extended")
+        headings = {
+            "idx": "#", "old": "原文件名", "new": "新文件名",
+            "doi": "DOI", "source": "来源", "title": "标题"
+        }
+        widths = {"idx": 44, "old": 210, "new": 310, "doi": 150, "source": 80, "title": 260}
+        for col in cols:
+            tree.heading(col, text=headings[col])
+            tree.column(col, width=widths[col], minwidth=44, anchor=tk.W, stretch=(col in ("new", "title")))
+        tree.grid(row=0, column=0, sticky=tk.NSEW, padx=10, pady=10)
+        ybar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        ybar.grid(row=0, column=1, sticky=tk.NS, pady=10)
+        tree.configure(yscrollcommand=ybar.set)
+
+        for pos, item in enumerate(self.pdf_rename_results, start=1):
+            tree.insert("", tk.END, iid=str(pos - 1), values=(
+                pos,
+                self._short(item.get("old_name", ""), 42),
+                self._short(item.get("new_name", ""), 64),
+                self._short(item.get("doi", ""), 30),
+                item.get("source", ""),
+                self._short(item.get("title", ""), 70),
+            ))
+
+        footer = tk.Frame(win, bg=C["bg_dark"])
+        footer.pack(fill=tk.X, padx=14, pady=(0, 14))
+        self._make_button(footer, "取消", win.destroy, kind="ghost").pack(side=tk.RIGHT)
+        self._make_button(footer, "确认重命名", lambda: self._confirm_pdf_rename(win), kind="primary").pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _confirm_pdf_rename(self, win):
+        if not self.pdf_rename_results:
+            return
+        ok = messagebox.askyesno("确认重命名", f"将重命名 {len(self.pdf_rename_results)} 个 PDF 文件，是否继续？")
+        if not ok:
+            return
+        try:
+            results = apply_renames(self.pdf_rename_results)
+            success = sum(1 for item in results if item.get("status") == "已重命名")
+            skipped = sum(1 for item in results if item.get("status") != "已重命名")
+            self.pdf_rename_results = results
+            self._log(f"✅ PDF 重命名完成: 成功 {success}, 跳过/失败 {skipped}", "success")
+            messagebox.showinfo("完成", f"重命名完成\n成功: {success}\n跳过/失败: {skipped}")
+            win.destroy()
+        except Exception as e:
+            self._log(f"PDF 重命名错误: {e}", "error")
+            messagebox.showerror("错误", str(e))
     # ═══════════════ 核心逻辑 ═══════════════
 
     def _detect_columns(self, reload=True):
@@ -1108,3 +1430,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

@@ -1,4 +1,4 @@
-"""
+﻿"""
 PDF 下载模块 —— 多源下载：tesble.com → doi.org 直链 → Sci-Hub
 支持自动重命名、进度回调、来源标识
 命名格式: 作者_年份_期刊首字母缩写_研究区域_题名简写.pdf
@@ -39,6 +39,16 @@ def clean_filename(name):
     return re.sub(r'[\\/:*?"<>|]', '_', str(name))
 
 
+def clean_filename_part(value, default=""):
+    """清理文件名字段：去除非法字符，并压缩字段内部空格。"""
+    text = str(value or "").strip()
+    if not text or text.lower() == "nan":
+        return default
+    text = clean_filename(text)
+    text = re.sub(r'\s+', '', text)
+    return text or default
+
+
 def get_title_case(text):
     """将文本转为首字母大写的标题格式"""
     text = str(text).strip()
@@ -56,11 +66,21 @@ def get_author_lastname(author_str):
     author_str = str(author_str).strip()
     if not author_str or author_str.lower() == 'nan':
         return "Unknown"
-    first_author = author_str.split(';')[0].split(',')[0].strip()
+    first_author = re.split(r'[;&]', author_str)[0].strip()
     # 若为 "LastName, FirstName" 格式取逗号前
-    if ',' in author_str.split(';')[0]:
-        return get_title_case(first_author)
-    # 否则返回整个第一作者（适用于中文名 Zhang Wei 或英文 Smith JA）
+    if ',' in first_author:
+        return get_title_case(first_author.split(',')[0].strip())
+    chinese_surnames = {
+        "Zhang", "Wang", "Li", "Liu", "Chen", "Yang", "Huang", "Zhao",
+        "Wu", "Zhou", "Xu", "Sun", "Ma", "Zhu", "Hu", "Guo", "He",
+        "Gao", "Lin", "Luo", "Zheng", "Liang", "Xie", "Song", "Tang",
+        "Deng", "Han", "Feng", "Cao", "Peng", "Cai", "Yuan", "Yu", "Pan"
+    }
+    parts = first_author.split()
+    if len(parts) >= 2 and get_title_case(parts[0]) in chinese_surnames:
+        return get_title_case(parts[0])
+    if len(parts) >= 2 and all(re.fullmatch(r'[A-Za-z.\'-]+', p) for p in parts):
+        return get_title_case(parts[-1])
     return get_title_case(first_author)
 
 
@@ -81,22 +101,67 @@ def get_journal_initials(journal_str):
     return initials if initials else "J"
 
 
-def get_title_abbreviation(title, max_chars=30):
-    """获取题名简写：取前 max_chars 个字符，在单词边界截断"""
+def get_title_abbreviation(title, max_chars=72, max_words=7):
+    """获取能保留原意的题名简写：提取关键词并转为 CamelCase。"""
     title = str(title).strip()
     if not title or title.lower() == 'nan':
         return "Untitled"
-    # 去除特殊字符，保留字母数字中文和空格
-    title = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fa5\s]', ' ', title)
+
+    title = re.sub(r'[\[\]{}()（）:：,，.。;；!?？！"“”’]', ' ', title)
     title = re.sub(r'\s+', ' ', title).strip()
-    if len(title) <= max_chars:
-        return title
-    truncated = title[:max_chars].strip()
-    # 在最后一个空格处截断
-    last_space = truncated.rfind(' ')
-    if last_space > max_chars // 2:
-        truncated = truncated[:last_space]
-    return truncated
+    if not title:
+        return "Untitled"
+
+    # 中文题名通常没有稳定空格，保留前一段即可保留含义。
+    if re.search(r'[\u4e00-\u9fa5]', title) and not re.search(r'[A-Za-z]', title):
+        return title[:min(max_chars, 24)]
+
+    stop_words = {
+        'a', 'an', 'the', 'of', 'and', 'or', 'for', 'to', 'in', 'on', 'at', 'by',
+        'from', 'with', 'without', 'using', 'use', 'used', 'based', 'via', 'through',
+        'under', 'over', 'between', 'among', 'into', 'during', 'towards', 'toward',
+        'study', 'studies', 'analysis', 'assessment', 'evaluation', 'approach', 'method',
+        'methods', 'case', 'new', 'novel', 'research', 'paper', 'results', 'effect',
+        'effects', 'impacts', 'impact', 'evidence', 'application', 'applications', 'model',
+        'models', 'modelling', 'modeling', 'data', 'dataset', 'datasets'
+    }
+    important_words = {
+        'landslide', 'susceptibility', 'hazard', 'risk', 'mapping', 'prediction', 'detection',
+        'monitoring', 'deformation', 'subsidence', 'forest', 'random', 'machine', 'learning',
+        'remote', 'sensing', 'insar', 'sar', 'gis', 'rainfall', 'slope', 'soil', 'water',
+        'erosion', 'flood', 'drought', 'glacier', 'runoff', 'basin', 'plateau', 'river'
+    }
+
+    words = re.findall(r'[A-Za-z0-9]+|[\u4e00-\u9fa5]+', title)
+    selected = []
+    for word in words:
+        low = word.lower()
+        if low in stop_words and low not in important_words:
+            continue
+        if len(low) <= 1 and not word.isdigit():
+            continue
+        selected.append(word)
+        if len(selected) >= max_words:
+            break
+
+    if len(selected) < 3:
+        for word in words:
+            if word not in selected and len(word) > 1:
+                selected.append(word)
+            if len(selected) >= max_words:
+                break
+
+    if not selected:
+        return "Untitled"
+
+    parts = []
+    for word in selected:
+        if re.fullmatch(r'[A-Za-z]+', word):
+            parts.append(word[:1].upper() + word[1:].lower())
+        else:
+            parts.append(word)
+    result = ''.join(parts)
+    return result[:max_chars] if len(result) > max_chars else result
 
 
 def fetch_metadata_from_web(doi):
@@ -362,10 +427,11 @@ def build_filename(row, research_area=""):
     year_num = _extract_year_value(year_val)
     year_str = str(year_num) if year_num else "Year"
 
-    # 期刊首字母缩写
-    journal_abbr = row.get("JOURNAL_ABBR", "")
-    if not journal_abbr or journal_abbr == "nan":
-        journal_abbr = get_journal_initials(row.get("JOURNAL", ""))
+    # 期刊只保留首字母缩写：无论来源是完整刊名还是带点缩写，最终都转为 initials。
+    journal_source = row.get("JOURNAL_ABBR", "") or row.get("JOURNAL", "")
+    if not journal_source or str(journal_source).lower() == "nan":
+        journal_source = row.get("JOURNAL", "")
+    journal_abbr = get_journal_initials(journal_source)
 
     # 研究区域
     area = row.get("RESEARCH_AREA", "")
@@ -378,7 +444,13 @@ def build_filename(row, research_area=""):
     title = str(row.get("title", "")).strip()
     title_short = get_title_abbreviation(title) if title else "Untitled"
 
-    filename = f"{last_name}_{year_str}_{journal_abbr}_{area}_{title_short}.pdf"
+    filename = "{}_{}_{}_{}_{}.pdf".format(
+        clean_filename_part(last_name, "Unknown"),
+        clean_filename_part(year_str, "Year"),
+        clean_filename_part(journal_abbr, "J"),
+        clean_filename_part(area, "Area"),
+        clean_filename_part(title_short, "Untitled"),
+    )
     return clean_filename(filename)
 
 
@@ -641,3 +713,7 @@ def download_all(rows, save_dir="Downloaded_PDFs", progress_callback=None):
             progress_callback(i + 1, total, row)
 
     return results
+
+
+
+

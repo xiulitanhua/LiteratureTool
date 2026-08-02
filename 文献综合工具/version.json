@@ -1,6 +1,6 @@
 {
-  "version": "20260716-1500",
-  "download_url": "https://github.com/xiulitanhua/LiteratureTool/raw/main/%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7/dist/%E6%96%87%E7%8C%AE%E7%BB%BC%E5%90%88%E5%B7%A5%E5%85%B7.exe",
-  "app_name": "文献综合工具 v3.4",
-  "release_notes": "v3.4: PDF命名格式优化——作者_年份_期刊首字母缩写_研究区域_题名简写.pdf；网页/Python元数据提取与自动重命名"
+    "version":  "20260802-1200",
+    "download_url":  "https://github.com/xiulitanhua/LiteratureTool/releases/download/v3.4.0/LitBox.exe",
+    "app_name":  "LitBox v3.4",
+    "release_notes":  "v3.4：新增 PDF 智能重命名、Excel 优先匹配、PDF 年份读取、期刊首字母缩写、题名语义简写、全新品牌图标与内置中文教程。"
 }
