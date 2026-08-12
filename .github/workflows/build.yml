@@ -20,9 +20,5 @@ jobs:
           $src = "$env:GITHUB_WORKSPACE\文献综合工具"
           pyinstaller --onefile --windowed --name app --distpath "$src\dist" --workpath "$src\build" "$src\main.py"
           Get-ChildItem "$src\dist"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dist
-          path: |
-            文献综合工具/dist/app.exe
+      # 移除 upload-artifact（避免 GitHub 存储计费问题，artifact 限额 500MB/月）
+      # 如需下载打包结果，请直接克隆仓库本地用 PyInstaller 构建
