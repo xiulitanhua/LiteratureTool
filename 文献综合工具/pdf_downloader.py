@@ -637,17 +637,96 @@ def _try_scihub(doi, timeout=20):
     return None
 
 
+# ═══════════════ AI 链接兜底下载 ═══════════════
+
+def _try_ai_link(url, timeout=20):
+    """
+    尝试从单个 AI 提供的候选链接下载 PDF。
+    校验 %PDF- 魔数 + 大小 > 5KB，返回内容或 None。
+    """
+    try:
+        referer = re.match(r'(https?://[^/]+)', url)
+        headers = dict(HEADERS)
+        if referer:
+            headers['Referer'] = referer.group(1) + '/'
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        content = resp.content
+        if content[:5] == b'%PDF-' and len(content) > 5000:
+            return content
+        # 部分站点返回 content-type=pdf 但魔数在字节流中
+        ct = resp.headers.get('Content-Type', '')
+        if 'pdf' in ct.lower() and len(content) > 5000:
+            return content
+    except Exception:
+        pass
+    return None
+
+
+# ═══════════════ 机器核验 OA 源（Unpaywall / 官方报告直连） ═══════════════
+
+def _try_unpaywall_oa(doi, timeout=15):
+    """
+    Unpaywall OA 镜像源（文档 v2: 开放仓库 → OA 镜像，先免费后付费）。
+    返回 PDF 内容或 None。
+    """
+    try:
+        from lit_verify import check_unpaywall
+        up = check_unpaywall(doi, timeout=timeout)
+        if not up or not up.get("is_oa"):
+            return None
+        # 先试 best_oa_location 的 url_for_pdf，再试所有 oa_locations
+        candidates = []
+        if up.get("oa_url"):
+            candidates.append(up["oa_url"])
+        for loc in up.get("oa_locations") or []:
+            if loc.get("url") and loc["url"] not in candidates:
+                candidates.append(loc["url"])
+        for url in candidates[:5]:
+            content = _try_ai_link(url, timeout)
+            if content is not None:
+                return content
+    except Exception:
+        pass
+    return None
+
+
+def _try_official_report(doi, timeout=20):
+    """
+    官方报告直连（文档 v2: ODP/DSDP 等官方报告 doi.org 直连返回 PDF 二进制）。
+    10.2973 系官方报告直接 GET doi.org 即返回 PDF，无需解析 HTML。
+    """
+    try:
+        doi_lower = doi.lower()
+        official_prefixes = ("10.2973", "10.1594", "10.5066", "10.3334", "10.5194")
+        if not doi_lower.startswith(official_prefixes):
+            return None
+        resp = requests.get(f"https://doi.org/{doi}", headers=HEADERS,
+                            timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        content = resp.content
+        if content[:5] == b'%PDF-' and len(content) > 5000:
+            return content
+    except Exception:
+        pass
+    return None
+
+
 # ═══════════════ 主下载函数（多源尝试） ═══════════════
 
-def download_pdf(doi, save_path, timeout=20):
+def download_pdf(doi, save_path, timeout=20, ai_links=None):
     """
-    多源下载，依次尝试：tesble.com → doi.org → Sci-Hub
+    多源下载，依次尝试：
+    Sci-Hub（第一优先）→ 官方报告直连 → tesble.com → doi.org → Unpaywall OA → AI 提供的 OA 链接
+    ai_links: [{"url", "source"}] 或 [url, ...]，常规源全部失败后尝试
     返回: (success, message, source_name)
     """
     sources = [
+        ("Sci-Hub", _try_scihub),
+        ("官方报告", _try_official_report),
         ("tesble.com", _try_tesble),
         ("doi.org", _try_doi_direct),
-        ("Sci-Hub", _try_scihub),
+        ("Unpaywall-OA", _try_unpaywall_oa),
     ]
     for source_name, source_func in sources:
         try:
@@ -658,13 +737,30 @@ def download_pdf(doi, save_path, timeout=20):
                 return True, "下载成功", source_name
         except Exception:
             continue
+
+    # AI 兜底：尝试 DeepSeek 提供的开放获取链接
+    if ai_links:
+        for item in ai_links:
+            url = item.get("url") if isinstance(item, dict) else item
+            src_tag = item.get("source") if isinstance(item, dict) else "DeepSeek"
+            if not url:
+                continue
+            try:
+                content = _try_ai_link(url, timeout)
+                if content is not None:
+                    with open(save_path, 'wb') as f:
+                        f.write(content)
+                    return True, f"下载成功 (AI:{src_tag})", "DeepSeek"
+            except Exception:
+                continue
     return False, "所有下载源均失败", "—"
 
 
-def download_all(rows, save_dir="Downloaded_PDFs", progress_callback=None):
+def download_all(rows, save_dir="Downloaded_PDFs", progress_callback=None, ai_links_map=None):
     """
     批量下载 PDF，返回更新后的 rows
     下载后自动从网页获取元数据优化文件名，网页获取失败则从 PDF 读取
+    ai_links_map: {doi: [{"url","source"}]} 可选的 AI 链接兜底映射
     """
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -688,7 +784,11 @@ def download_all(rows, save_dir="Downloaded_PDFs", progress_callback=None):
 
         time.sleep(random.uniform(1.5, 3.5))
 
-        success, msg, source = download_pdf(doi, save_path)
+        ai_links = None
+        if ai_links_map and doi in ai_links_map:
+            ai_links = ai_links_map.get(doi)
+
+        success, msg, source = download_pdf(doi, save_path, ai_links=ai_links)
 
         row["_download_source"] = source
         if success:

@@ -287,8 +287,11 @@ def guess_metadata_from_pdf(pdf_path):
     }
 
 
-def analyze_pdf(pdf_path, excel_rows=None):
-    """分析单个 PDF，返回预览信息；Excel 元数据优先。"""
+def analyze_pdf(pdf_path, excel_rows=None, use_ai=False, ai_cfg=None):
+    """分析单个 PDF，返回预览信息；Excel 元数据优先。
+
+    use_ai=True 时：Excel 匹配失败或关键字段缺失，调用 DeepSeek 补全元数据再命名。
+    """
     doi = extract_doi_from_pdf(pdf_path)
     row = fetch_crossref_by_doi(doi) if doi else {}
     fallback = guess_metadata_from_pdf(pdf_path)
@@ -311,6 +314,42 @@ def analyze_pdf(pdf_path, excel_rows=None):
         if pdf_year:
             merged["YEAR"] = pdf_year
 
+    # AI 命名兜底：关键字段缺失且已启用 AI 时，调用 DeepSeek 补全
+    if use_ai and ai_cfg:
+        need_ai = False
+        if not merged.get("title") or not _safe_text(merged.get("title")):
+            need_ai = True
+        if not merged.get("AUTHOR") or str(merged.get("AUTHOR", "")).lower() in ("unknown", "nan", ""):
+            need_ai = True
+        if not merged.get("RESEARCH_AREA") or merged.get("RESEARCH_AREA") in ("Area", "Unknown"):
+            need_ai = True
+        if not _has_year(merged.get("YEAR", "")):
+            need_ai = True
+
+        if need_ai:
+            try:
+                from deepseek_ai import ai_fix_metadata
+                ai_meta = ai_fix_metadata(
+                    str(merged.get("title", ""))[:200],
+                    year=merged.get("YEAR"),
+                    author=merged.get("AUTHOR"),
+                    journal=merged.get("JOURNAL"),
+                    doi=doi,
+                    cfg=ai_cfg,
+                )
+                if ai_meta:
+                    mapping = {
+                        "author": "AUTHOR", "year": "YEAR",
+                        "journal": "JOURNAL", "journal_abbr": "JOURNAL_ABBR",
+                        "research_area": "RESEARCH_AREA",
+                    }
+                    for src_key, dst_key in mapping.items():
+                        if ai_meta.get(src_key) and not _safe_text(merged.get(dst_key)):
+                            merged[dst_key] = ai_meta[src_key]
+                    source = "AI" if source in ("PDF", "Crossref") else source + "+AI"
+            except Exception:
+                pass
+
     new_name = build_filename(merged)
     return {
         "path": pdf_path,
@@ -323,8 +362,12 @@ def analyze_pdf(pdf_path, excel_rows=None):
     }
 
 
-def scan_pdf_folder(folder, recursive=False, progress_callback=None, excel_rows=None):
-    """扫描文件夹中的 PDF 并生成重命名预览。"""
+def scan_pdf_folder(folder, recursive=False, progress_callback=None, excel_rows=None,
+                    use_ai=False, ai_cfg=None):
+    """扫描文件夹中的 PDF 并生成重命名预览。
+
+    use_ai=True 时对元数据缺失的 PDF 调用 DeepSeek 补全。
+    """
     pdfs = []
     if recursive:
         for root, _dirs, files in os.walk(folder):
@@ -341,7 +384,7 @@ def scan_pdf_folder(folder, recursive=False, progress_callback=None, excel_rows=
     total = len(pdfs)
     for i, path in enumerate(pdfs, start=1):
         try:
-            item = analyze_pdf(path, excel_rows=excel_rows)
+            item = analyze_pdf(path, excel_rows=excel_rows, use_ai=use_ai, ai_cfg=ai_cfg)
         except Exception as exc:
             item = {
                 "path": path,

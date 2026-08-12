@@ -3,7 +3,7 @@ LitBox v3.4 - Literature Collector
 浅色科研数据表格中心界面
 """
 
-import os, sys, re, json, threading
+import os, sys, re, json, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -15,9 +15,10 @@ from pdf_downloader import download_all, build_filename, clean_filename
 from pdf_renamer import scan_pdf_folder, apply_renames
 from updater import check_for_update
 from report import generate_report
+import deepseek_ai
 
 # 当前版本号（格式: yyyyMMdd-HHmm，与 GitHub version.json 对比）
-CURRENT_VERSION = "20260802-1200"
+CURRENT_VERSION = "20260812-1955"
 
 APP_NAME = "LitBox"
 APP_SUBTITLE = "Literature Collector"
@@ -98,6 +99,10 @@ class LiteratureApp:
         self.detected = None
         self.pdf_rename_results = []
 
+        # DeepSeek AI 配置（从 config.json 加载）
+        self.ds_cfg = deepseek_ai.load_config()
+        self.rename_mode = tk.StringVar(value="local")  # local / ai
+
         self.stats_doi_total = tk.StringVar(value="—")
         self.stats_doi_found = tk.StringVar(value="—")
         self.stats_doi_failed = tk.StringVar(value="—")
@@ -110,8 +115,12 @@ class LiteratureApp:
 
         self._set_window_icon(self.root)
         self._build_ui()
-        self._log(f"{APP_NAME} v3.4", "header")
+        self._log(f"{APP_NAME} v3.5", "header")
         self._log("Excel → DOI 获取 → PDF 下载 → 智能命名，当前界面以文献表格核对为中心。")
+        if deepseek_ai.is_configured(self.ds_cfg):
+            self._log("🤖 DeepSeek AI 补全已启用", "success")
+        else:
+            self._log("🤖 DeepSeek AI 补全未启用（可在设置页配置）", "info")
 
         # 后台检查更新
         check_for_update(self.root, CURRENT_VERSION, log_callback=self._log)
@@ -176,6 +185,7 @@ class LiteratureApp:
 
         nav = tk.Frame(header, bg=C["bg_dark"])
         nav.pack(side=tk.RIGHT)
+        self._make_button(nav, "AI 对话", self._toggle_ai_chat, kind="ghost").pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(nav, "总览", lambda: self._switch_page("overview"), kind="ghost").pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(nav, "使用教程", self._show_tutorial, kind="ghost").pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(nav, "设置", lambda: self._switch_page("settings"), kind="ghost").pack(side=tk.LEFT)
@@ -241,15 +251,15 @@ class LiteratureApp:
         table_body.columnconfigure(0, weight=1)
         table_body.rowconfigure(0, weight=1)
 
-        cols = ("idx", "title", "year", "author", "journal", "doi", "source", "match", "pdf")
+        cols = ("idx", "title", "pdf", "doi", "year", "author", "journal", "source", "match")
         self.paper_table = ttk.Treeview(table_body, columns=cols, show="headings", selectmode="browse")
         headings = {
-            "idx": "#", "title": "标题", "year": "年份", "author": "作者",
-            "journal": "期刊", "doi": "DOI 状态", "source": "来源",
-            "match": "匹配度", "pdf": "PDF 状态"
+            "idx": "#", "title": "标题", "pdf": "PDF 状态", "doi": "DOI 状态",
+            "year": "年份", "author": "作者", "journal": "期刊",
+            "source": "来源", "match": "匹配度"
         }
-        widths = {"idx": 44, "title": 330, "year": 70, "author": 120, "journal": 150,
-                  "doi": 110, "source": 90, "match": 80, "pdf": 100}
+        widths = {"idx": 44, "title": 300, "pdf": 100, "doi": 110, "year": 70,
+                  "author": 120, "journal": 150, "source": 90, "match": 80}
         for col in cols:
             self.paper_table.heading(col, text=headings[col])
             self.paper_table.column(col, width=widths[col], minwidth=44, anchor=tk.W, stretch=(col == "title"))
@@ -292,6 +302,21 @@ class LiteratureApp:
                 lbl.bind("<Button-1>", self._on_doi_click)
                 lbl.bind("<Enter>", lambda e: lbl.configure(cursor="hand2"))
 
+        # AI 代理操作按钮（选中文献后可用）
+        ai_ops = tk.Frame(detail_body, bg=C["bg_card"])
+        ai_ops.pack(fill=tk.X, pady=(14, 0))
+        self.btn_ai_search_doi = self._make_button(
+            ai_ops, "🔍 搜索 DOI", lambda: self._ai_proxy_action("doi"), kind="secondary")
+        self.btn_ai_search_doi.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.btn_ai_get_pdf = self._make_button(
+            ai_ops, "📥 AI 搜集下载", lambda: self._ai_proxy_action("pdf"), kind="primary")
+        self.btn_ai_get_pdf.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        self.btn_ai_search_doi.config(state=tk.DISABLED)
+        self.btn_ai_get_pdf.config(state=tk.DISABLED)
+        tk.Label(detail_body, text="选中文献后可用：AI 自动匹配 DOI / 搜集 PDF，过程在对话窗口展示",
+                 font=(FONT, 8), fg=C["text_dim"], bg=C["bg_card"], justify=tk.LEFT,
+                 anchor=tk.W, wraplength=280).pack(anchor=tk.W, pady=(6, 0))
+
         progress_panel = tk.Frame(p, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
         progress_panel.pack(fill=tk.X, padx=18, pady=(0, 10))
         prog_inner = tk.Frame(progress_panel, bg=C["bg_card"])
@@ -307,6 +332,43 @@ class LiteratureApp:
         tk.Label(prog_inner, textvariable=self.status_var, font=(FONT, 8),
                  fg=C["text_dim"], bg=C["bg_card"]).pack(anchor=tk.W, pady=(6, 0))
 
+        # ═══════════ 下载进度详情面板 ═══════════
+        dl_panel = self._card_frame(p, "📥 下载进度")
+        dl_panel.pack(fill=tk.X, padx=18, pady=(0, 10))
+        dl_inner = tk.Frame(dl_panel, bg=C["bg_card"])
+        dl_inner.pack(fill=tk.X, padx=12, pady=10)
+
+        # 明细进度条：成功数/总数 + 百分比
+        dl_stat_row = tk.Frame(dl_inner, bg=C["bg_card"])
+        dl_stat_row.pack(fill=tk.X)
+        self.dl_progress_var = tk.StringVar(value="0/0 篇")
+        tk.Label(dl_stat_row, textvariable=self.dl_progress_var, font=(FONT, 10, "bold"),
+                 fg=C["accent"], bg=C["bg_card"], width=10, anchor=tk.W).pack(side=tk.LEFT)
+        self.dl_bar = tk.Canvas(dl_stat_row, height=8, bg=C["bg_input"], highlightthickness=0)
+        self.dl_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
+        self._dl_percent_var = tk.StringVar(value="0%")
+        tk.Label(dl_stat_row, textvariable=self._dl_percent_var, font=(FONT, 9),
+                 fg=C["text_dim"], bg=C["bg_card"], width=5, anchor=tk.E).pack(side=tk.LEFT, padx=(8, 0))
+
+        # 每篇文献的实时状态表
+        dl_table_frame = tk.Frame(dl_inner, bg=C["bg_card"])
+        dl_table_frame.pack(fill=tk.X, pady=(8, 0))
+        dl_cols = ("no", "title", "doi", "source", "status", "cost")
+        self.dl_tree = ttk.Treeview(dl_table_frame, columns=dl_cols, show="headings", height=5)
+        dl_head = {"no": "#", "title": "标题", "doi": "DOI", "source": "来源", "status": "状态", "cost": "用时"}
+        dl_wid = {"no": 36, "title": 250, "doi": 150, "source": 80, "status": 90, "cost": 50}
+        for col in dl_cols:
+            self.dl_tree.heading(col, text=dl_head[col])
+            self.dl_tree.column(col, width=dl_wid[col], minwidth=30, anchor=tk.W,
+                                stretch=(col in ("title", "doi")))
+        self.dl_tree.tag_configure("ok", foreground=C["success"])
+        self.dl_tree.tag_configure("fail", foreground=C["danger"])
+        self.dl_tree.tag_configure("ai", foreground=C["accent2"])
+        self.dl_tree.tag_configure("wait", foreground=C["text_dim"])
+        self.dl_tree.pack(fill=tk.X)
+        self._dl_start_time = None
+        self._dl_row_map = {}  # DOI -> tree iid
+
         lc = self._card_frame(p, "运行日志")
         lc.pack(fill=tk.X, padx=18, pady=(0, 16))
         self.log_area = scrolledtext.ScrolledText(lc, wrap=tk.WORD,
@@ -320,6 +382,632 @@ class LiteratureApp:
         self.log_area.tag_config("warn", foreground=C["warning"])
         self.log_area.tag_config("muted", foreground=C["text_dim"])
         self.log_area.tag_config("header", foreground=C["accent2"], font=(MONO, 9, "bold"))
+
+    # ═══════════════ 使用教程 ═══════════════
+
+    # ═══════════════ AI 对话窗口 ═══════════════
+
+    def _toggle_ai_chat(self):
+        """打开/关闭 AI 对话窗口（可开关）。"""
+        try:
+            if hasattr(self, "_ai_chat_win") and self._ai_chat_win is not None and self._ai_chat_win.winfo_exists():
+                self._ai_chat_win.destroy()
+                self._ai_chat_win = None
+                return
+        except Exception:
+            self._ai_chat_win = None
+        self._open_ai_chat()
+
+    def _open_ai_chat(self):
+        """创建 AI 对话窗口。"""
+        # 同步最新配置：设置页 UI 里已填的值优先（未点"保存配置"也能生效）
+        if hasattr(self, "ai_key_var") and str(self.ai_key_var.get()).strip():
+            self.ds_cfg["api_key"] = self.ai_key_var.get().strip()
+            self.ds_cfg["base_url"] = self.ai_url_var.get().strip() or "https://api.deepseek.com"
+            self.ds_cfg["model"] = self.ai_model_var.get().strip() or "deepseek-chat"
+            self.ds_cfg["deepseek_enabled"] = self.ai_enabled_var.get()
+            deepseek_ai.save_config(self.ds_cfg)
+        else:
+            # 设置页没填过：重新读磁盘配置（可能用户在外部改过 config.json）
+            self.ds_cfg = deepseek_ai.load_config()
+
+        if not deepseek_ai.is_configured(self.ds_cfg):
+            messagebox.showwarning(
+                "AI 未配置",
+                "请先在「设置」页填写 DeepSeek API Key 并勾选「启用 AI 补全」。\n"
+                "（Key 在 platform.deepseek.com 获取）")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"{APP_NAME} - AI 对话")
+        win.geometry("640x880")
+        win.minsize(500, 640)
+        win.configure(bg=C["bg_dark"])
+        win.transient(self.root)
+        self._set_window_icon(win)
+        self._ai_chat_win = win
+
+        header = tk.Frame(win, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="🤖 AI 对话", font=(FONT, 14, "bold"), fg=C["text"],
+                 bg=C["bg_card"]).pack(side=tk.LEFT, padx=16, pady=10)
+        tk.Label(header, text="可直接提问，或引用表格中选中的文献", font=(FONT, 9),
+                 fg=C["text_dim"], bg=C["bg_card"]).pack(side=tk.LEFT, padx=(6, 0), pady=(13, 10))
+        self._make_button(header, "关闭", win.destroy, kind="ghost").pack(side=tk.RIGHT, padx=12, pady=8)
+
+        # 消息区
+        body = tk.Frame(win, bg=C["bg_dark"])
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+
+        chat_frame = tk.Frame(body, bg=C["bg_card"], highlightbackground=C["border"], highlightthickness=1)
+        chat_frame.pack(fill=tk.BOTH, expand=True)
+
+        self._ai_chat_log = scrolledtext.ScrolledText(
+            chat_frame, wrap=tk.WORD, font=(FONT, 10),
+            bg=C["bg_input"], fg=C["text"], relief=tk.FLAT, padx=12, pady=10)
+        self._ai_chat_log.pack(fill=tk.BOTH, expand=True)
+        self._ai_chat_log.configure(state=tk.DISABLED)
+
+        # 引用文献按钮行
+        ref_row = tk.Frame(body, bg=C["bg_dark"])
+        ref_row.pack(fill=tk.X, pady=(8, 0))
+        self._ai_ref_row = ref_row
+        self._ai_chat_body = body
+        self._make_button(ref_row, "📎 引用选中文献", self._ai_attach_selected, kind="secondary").pack(side=tk.LEFT)
+        self._make_button(ref_row, "🔍 批量搜文献", self._ai_batch_search, kind="secondary").pack(side=tk.LEFT, padx=(8, 0))
+        self._make_button(ref_row, "🧹 清空对话", self._ai_clear_chat, kind="ghost").pack(side=tk.LEFT, padx=(8, 0))
+        self._ai_ref_label = tk.Label(ref_row, text="", font=(FONT, 8), fg=C["accent2"],
+                                      bg=C["bg_dark"], anchor=tk.W)
+        self._ai_ref_label.pack(side=tk.LEFT, padx=(10, 0), fill=tk.X, expand=True)
+
+        # 输入区（注意：按钮先 pack 占右侧，输入框再 expand，否则按钮被挤出窗口）
+        input_row = tk.Frame(body, bg=C["bg_dark"])
+        input_row.pack(fill=tk.X, pady=(8, 0))
+        self._ai_send_btn = self._make_button(input_row, "发送", self._ai_send, kind="primary")
+        self._ai_send_btn.pack(side=tk.RIGHT, padx=(8, 0), fill=tk.Y)
+        self._ai_input = scrolledtext.ScrolledText(
+            input_row, height=3, wrap=tk.WORD, font=(FONT, 10),
+            bg=C["bg_card"], fg=C["text"], relief=tk.FLAT,
+            highlightbackground=C["border"], highlightthickness=1)
+        self._ai_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 状态
+        self._ai_status_var = tk.StringVar(value="就绪")
+        tk.Label(body, textvariable=self._ai_status_var, font=(FONT, 8),
+                 fg=C["text_dim"], bg=C["bg_dark"]).pack(fill=tk.X, pady=(6, 0))
+
+        # 快捷键：Ctrl+Enter 发送
+        self._ai_input.bind("<Control-Return>", lambda e: self._ai_send())
+        self._ai_attached = None
+
+        self._ai_append("🤖 你好，我是 LitBox 内置的 DeepSeek 助手。\n"
+                        "· 直接输入问题即可对话\n"
+                        "· 先选中表格中的文献，再点「引用选中文献」，可让 AI 分析该文献\n"
+                        "· 可以问：这篇文献的 DOI？开放获取版本？如何获取？", "system")
+        self._ai_input.focus_set()
+
+    def _ai_append(self, text, role="user"):
+        """向对话区追加一条消息。role: user/ai/system"""
+        if not hasattr(self, "_ai_chat_log"):
+            return
+        self._ai_chat_log.configure(state=tk.NORMAL)
+        tag = {"user": "user", "ai": "ai", "system": "system"}.get(role, "system")
+        self._ai_chat_log.insert(tk.END, text + "\n\n", tag)
+        self._ai_chat_log.tag_config("user", foreground=C["text"], font=(FONT, 10, "bold"))
+        self._ai_chat_log.tag_config("ai", foreground=C["accent2"], font=(FONT, 10))
+        self._ai_chat_log.tag_config("system", foreground=C["text_dim"], font=(FONT, 9))
+        self._ai_chat_log.configure(state=tk.DISABLED)
+        self._ai_chat_log.see(tk.END)
+
+    def _ai_attach_selected(self):
+        """把表格中选中的文献附加到输入框上下文。"""
+        if self.df is None or not hasattr(self, "paper_table"):
+            self._ai_append("⚠ 请先在总览页导入并选中一条文献。", "system")
+            return
+        sel = self.paper_table.selection()
+        if not sel:
+            self._ai_append("⚠ 请先在表格中选中一条文献。", "system")
+            return
+        idx = int(sel[0])
+        row = self.df.loc[idx]
+
+        def cell(col, default="未知"):
+            if col is None:
+                return default
+            v = row.get(col, "")
+            if pd.isna(v) or not str(v).strip():
+                return default
+            return str(v).strip()
+
+        tcn = self._resolve_column("title_col")
+        ycn = self._resolve_column("year_col")
+        acn = self._resolve_column("author_col")
+        jcn = self._resolve_column("journal_col")
+        dcn = self._doi_column_for_display()
+
+        ref = {
+            "title": cell(tcn, "未知标题"),
+            "year": cell(ycn),
+            "author": cell(acn),
+            "journal": cell(jcn),
+            "doi": cell(dcn),
+            "status": cell("DOI状态", "待查询"),
+        }
+        self._ai_attached = ref
+        summary = f"已引用: {ref['title'][:50]}"
+        if ref.get("year"): summary += f" ({ref['year']})"
+        self._ai_ref_label.configure(text=summary)
+        self._ai_append(f"📎 已引用文献:\n标题: {ref['title']}\n年份: {ref['year']}\n作者: {ref['author']}\n"
+                        f"期刊: {ref['journal']}\nDOI: {ref['doi']}\n状态: {ref['status']}", "system")
+
+    def _ai_clear_chat(self):
+        """清空对话区。"""
+        if hasattr(self, "_ai_chat_log"):
+            self._ai_chat_log.configure(state=tk.NORMAL)
+            self._ai_chat_log.delete("1.0", tk.END)
+            self._ai_chat_log.configure(state=tk.DISABLED)
+        self._ai_attached = None
+        self._ai_ref_label.configure(text="")
+
+    # ═══════════════ AI 批量文献搜集 ═══════════════
+
+    def _ai_batch_search(self):
+        """按主题批量搜集文献：用户输入主题 → AI 解析 → Crossref 搜索 → 候选导入。"""
+        if not deepseek_ai.is_configured(self.ds_cfg):
+            self._ai_append("⚠ 请先在设置页配置 DeepSeek API Key。", "system")
+            return
+
+        # 弹出主题输入窗口
+        topic_win = tk.Toplevel(self.root)
+        topic_win.title("🔍 批量搜集文献")
+        topic_win.geometry("520x240")
+        topic_win.configure(bg=C["bg_dark"])
+        topic_win.transient(self.root)
+        self._set_window_icon(topic_win)
+
+        tk.Label(topic_win, text="描述你想搜集的文献主题", font=(FONT, 12, "bold"),
+                 fg=C["text"], bg=C["bg_dark"]).pack(anchor=tk.W, padx=18, pady=(18, 6))
+        tk.Label(topic_win, text="例：2020 年以来北大西洋中脊地幔熔融的文献，找 15 篇",
+                 font=(FONT, 9), fg=C["text_dim"], bg=C["bg_dark"]).pack(anchor=tk.W, padx=18)
+
+        entry = tk.Text(topic_win, height=4, wrap=tk.WORD, font=(FONT, 10),
+                        bg=C["bg_card"], fg=C["text"], relief=tk.FLAT,
+                        highlightbackground=C["border"], highlightthickness=1)
+        entry.pack(fill=tk.X, padx=18, pady=12)
+
+        def do_search():
+            text = entry.get("1.0", tk.END).strip()
+            if not text:
+                return
+            topic_win.destroy()
+            self._ai_append(f"🔍 批量搜集: {text}", "user")
+            self._ai_status_var.set("解析主题...")
+            threading.Thread(target=lambda: self._ai_batch_search_worker(text), daemon=True).start()
+
+        btns = tk.Frame(topic_win, bg=C["bg_dark"])
+        btns.pack(fill=tk.X, padx=18)
+        self._make_button(btns, "开始搜索", do_search, kind="primary").pack(side=tk.RIGHT)
+        self._make_button(btns, "取消", topic_win.destroy, kind="ghost").pack(side=tk.RIGHT, padx=(0, 8))
+        entry.focus_set()
+
+    def _ai_batch_search_worker(self, text):
+        """批量搜索工作线程：AI 解析主题 → Crossref 搜索 → 展示候选。
+        全程以「思考步骤流」输出：目标 → 规划 → 执行 → 筛选 → 结果。"""
+        def step(msg, kind="system"):
+            """追加一条带时间戳的思考步骤。"""
+            ts = time.strftime("%H:%M:%S")
+            self.root.after(0, lambda: self._ai_append(f"[{ts}] {msg}", kind))
+            self.root.update_idletasks()
+
+        try:
+            # ── 步骤 1: 理解用户需求 ──
+            step(f"🧠 思考① 理解需求\n  用户请求: {str(text)[:100]}")
+            step("  正在让 DeepSeek 解析：提取英文关键词 / 年份范围 / 数量...")
+
+            query = deepseek_ai.parse_topic_query(text, cfg=self.ds_cfg)
+            if not query:
+                step("⚠ 解析失败：需求描述信息不足", "warn")
+                self.root.after(0, lambda: self._ai_append(
+                    "  请描述更具体，如：2020年以来 北大西洋中脊 地幔熔融 文献，找 15 篇", "system"))
+                self.root.after(0, lambda: self._ai_status_var.set("就绪"))
+                return
+
+            kws = ", ".join(query["keywords"])
+            yf = query.get("year_from") or "不限"
+            yt = query.get("year_to") or "不限"
+            lim = query["limit"]
+            step(f"🧠 思考② 检索规划\n  解析结果: 关键词 [{kws}] | 年份 {yf}~{yt} | 目标 {lim} 篇")
+            step(f"  选择 Crossref 作为检索源：收录全、字段规范、支持年份过滤")
+
+            # ── 步骤 2: 构建查询并执行 ──
+            query_built = " ".join(query["keywords"])
+            if query.get("year_from"):
+                query_built += f" | 限定 ≥{query['year_from']}"
+            step(f"🔍 思考③ 执行检索\n  查询: {query_built}\n  调 Crossref API...")
+
+            results = deepseek_ai.search_works_by_topic(query, limit=lim)
+            if not results:
+                step("⚠ 思考④ 结果：Crossref 返回 0 篇", "warn")
+                step("  可能原因: 关键词过窄/年份过新/无收录。建议换个同义词再试。", "system")
+                self.root.after(0, lambda: self._ai_status_var.set("无结果"))
+                return
+
+            # ── 步骤 3: 筛选与去重 ──
+            step(f"✅ 思考④ 结果: Crossref 返回 {len(results)} 篇原始结果")
+            step(f"  正在筛选: 剔除无标题/无 DOI 记录，保留有效候选...")
+            valid = [w for w in results if w.get("title") and (w.get("doi") or True)]
+            step(f"  有效候选: {len(valid)} 篇（将在下方列表展示，可勾选导入）")
+
+            self._candidate_works = valid
+            self.root.after(0, lambda: self._ai_show_batch_candidates(valid))
+            self.root.after(0, lambda: self._ai_status_var.set(f"找到 {len(valid)} 篇"))
+        except Exception as e:
+            self.root.after(0, lambda: self._ai_append(f"❌ 批量搜索错误: {e}", "system"))
+            self.root.after(0, lambda: self._ai_status_var.set("就绪"))
+
+    def _ai_show_batch_candidates(self, results):
+        """在对话窗口展示候选文献列表 + 导入按钮。"""
+        # 清理旧的候选区（多次搜索时）
+        for w in getattr(self, "_ai_cand_frames", []):
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._ai_cand_frames = []
+
+        self._ai_append(f"📚 找到 {len(results)} 篇候选文献：", "ai")
+        self._ai_candidates = results
+
+        # 候选列表区（不含导入按钮，按钮单独放避免被挤压）
+        cand_frame = tk.Frame(self._ai_chat_body, bg=C["bg_card"],
+                              highlightbackground=C["border"], highlightthickness=1)
+        cand_frame.pack(fill=tk.X, padx=14, pady=(0, 4), before=self._ai_ref_row)
+        self._ai_cand_frames.append(cand_frame)
+
+        header = tk.Frame(cand_frame, bg=C["bg_card"])
+        header.pack(fill=tk.X, padx=10, pady=(8, 4))
+        tk.Label(header, text=f"候选文献（{len(results)} 篇，勾选后导入 Excel）",
+                 font=(FONT, 9, "bold"), fg=C["text_dim"], bg=C["bg_card"]).pack(side=tk.LEFT)
+        self._make_button(header, "全选", lambda: self._ai_select_all_candidates(True), kind="ghost").pack(side=tk.RIGHT)
+        self._make_button(header, "取消全选", lambda: self._ai_select_all_candidates(False), kind="ghost").pack(side=tk.RIGHT, padx=(0, 6))
+
+        list_frame = tk.Frame(cand_frame, bg=C["bg_card"])
+        list_frame.pack(fill=tk.X, padx=10, pady=(0, 8))
+        # height 改成 7 让候选更易读（之前 6 容易被父容器压扁）
+        self._ai_cand_list = tk.Listbox(list_frame, height=7, selectmode=tk.EXTENDED,
+                                         font=(FONT, 9), bg=C["bg_input"], fg=C["text"],
+                                         relief=tk.FLAT, highlightbackground=C["border"])
+        scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self._ai_cand_list.yview)
+        self._ai_cand_list.configure(yscrollcommand=scroll.set)
+        self._ai_cand_list.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for w in results:
+            label = f"[{w['year'] or '----'}] {w['title'][:70]} | {w['journal'][:25]}"
+            self._ai_cand_list.insert(tk.END, label)
+
+        # 导入按钮：放单独一行（在 cand_frame 之后、ref_row 之前），保证不被压扁
+        btn_bar = tk.Frame(self._ai_chat_body, bg=C["bg_dark"])
+        btn_bar.pack(fill=tk.X, padx=14, pady=(0, 6), before=self._ai_ref_row)
+        self._ai_cand_frames.append(btn_bar)
+        self._make_button(btn_bar, "➕ 导入选中的到 Excel", self._ai_import_candidates,
+                         kind="primary").pack(side=tk.RIGHT)
+
+    def _ai_select_all_candidates(self, select):
+        """全选/取消全选候选文献。"""
+        if hasattr(self, "_ai_cand_list"):
+            if select:
+                self._ai_cand_list.selection_set(0, tk.END)
+            else:
+                self._ai_cand_list.selection_clear(0, tk.END)
+
+    def _ai_import_candidates(self):
+        """把勾选的候选文献写入 Excel（无 Excel 时自动创建新文件，插入待下载态）。"""
+        if not hasattr(self, "_ai_cand_list") or not hasattr(self, "_ai_candidates"):
+            return
+        sel = self._ai_cand_list.curselection()
+        if not sel:
+            messagebox.showinfo("提示", "请先勾选要导入的文献")
+            return
+
+        # 收集选中项
+        selected = [self._ai_candidates[i] for i in sel]
+
+        # ── 自动创建 Excel：无 df 或未加载文件时，新建标准结构并设置检测 ──
+        import pandas as pd
+        created_new = False
+        if self.df is None or len(self.df) == 0 or self.detected is None:
+            self.df = pd.DataFrame(columns=["标题", "作者", "年份", "期刊", "DOI", "DOI状态"])
+            self.detected = {"title_col": 0, "year_col": 2, "author_col": 1,
+                             "journal_col": 3, "doi_col": 4}
+            created_new = True
+
+        # 去重（按 DOI，跳过已有的）
+        existing_dois = set()
+        if "DOI" in list(self.df.columns):
+            existing_dois = {str(v).strip().lower() for v in self.df["DOI"].dropna()}
+        new_items = [w for w in selected if not w.get("doi") or str(w["doi"]).lower() not in existing_dois]
+
+        if not new_items:
+            messagebox.showinfo("提示", "选中的文献都已存在清单中")
+            self._ai_append("ℹ 所选文献均已存在于当前 Excel。", "system")
+            return
+
+        tcn = self._resolve_column("title_col") or "标题"
+        acn = self._resolve_column("author_col") or "作者"
+        ycn = self._resolve_column("year_col") or "年份"
+        jcn = self._resolve_column("journal_col") or "期刊"
+        dcn = self._doi_column_for_display() or "DOI"
+
+        rows = []
+        for w in new_items:
+            rows.append({
+                tcn: w["title"],
+                acn: ", ".join(w.get("authors") or []),
+                ycn: w.get("year"),
+                jcn: w.get("journal", ""),
+                dcn: w.get("doi", ""),
+                "DOI状态": "待下载" if w.get("doi") else "待查询",
+            })
+        self.df = pd.concat([self.df, pd.DataFrame(rows)], ignore_index=True)
+        self._refresh_table()
+        self._update_stats(stage=f"✅ 导入 {len(rows)} 篇")
+        self._ai_append(f"✅ 已将 {len(rows)} 篇文献加入{'新创建的 ' if created_new else ''}Excel"
+                        f"（跳过 {len(selected) - len(new_items)} 篇重复）。", "ai")
+        self._log(f"📥 批量导入 {len(rows)} 篇文献到表格" + ("（自动创建 Excel）" if created_new else ""), "success")
+
+        # 保存：无输入文件时自动创建 _批量搜集.xlsx
+        try:
+            if created_new or not self.input_path.get() or not os.path.isfile(self.input_path.get()):
+                op = os.path.join(self.output_dir.get() or os.getcwd(), "批量搜集文献清单.xlsx")
+            else:
+                op = self._get_output_path("_批量搜集.xlsx")
+            self.df.to_excel(op, index=False)
+            self._ai_append(f"📁 已保存: {os.path.basename(op)}", "system")
+        except Exception:
+            pass
+
+    # ═══════════════ AI 代理：选中文献自动搜 DOI / 下载 PDF ═══════════════
+
+    def _ai_proxy_action(self, action):
+        """选中文献后触发 AI 代理任务（action: doi / pdf）。
+        打开 AI 对话窗口，自动附加选中文献并执行任务，思考过程实时展示。"""
+        if self.df is None or not hasattr(self, "paper_table"):
+            messagebox.showwarning("提示", "请先导入 Excel 并选中一条文献")
+            return
+        sel = self.paper_table.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先在表格中选中一条文献")
+            return
+        idx = int(sel[0])
+        row = self.df.loc[idx]
+
+        # 收集文献信息
+        def cell(col, default="未知"):
+            if col is None:
+                return default
+            v = row.get(col, "")
+            if pd.isna(v) or not str(v).strip():
+                return default
+            return str(v).strip()
+
+        ref = {
+            "title": cell(self._resolve_column("title_col"), "未知标题"),
+            "year": cell(self._resolve_column("year_col")),
+            "author": cell(self._resolve_column("author_col")),
+            "journal": cell(self._resolve_column("journal_col")),
+            "doi": cell(self._doi_column_for_display()),
+            "status": cell("DOI状态", "待查询"),
+        }
+
+        # 打开对话窗口（若已开则复用）
+        self._open_ai_chat()
+        self._ai_attached = ref
+        summary = f"已引用: {ref['title'][:50]}"
+        if ref.get("year"):
+            summary += f" ({ref['year']})"
+        self._ai_ref_label.configure(text=summary)
+
+        action_name = "搜索 DOI" if action == "doi" else "搜集下载 PDF"
+        self._ai_append(f"🤖 收到任务：{action_name}\n目标文献: {ref['title']}\n", "system")
+
+        # 后台执行任务
+        def worker():
+            if action == "doi":
+                self._ai_proxy_search_doi(idx, ref)
+            else:
+                self._ai_proxy_get_pdf(idx, ref)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ai_proxy_search_doi(self, idx, ref):
+        """AI 代理任务①：为选中文献搜索 DOI（机器核验找回 → AI 兜底 → 核验写入）。
+        全程以「思考步骤流」输出。"""
+        import lit_verify
+        title = ref.get("title", "")
+        year = ref.get("year")
+        author = ref.get("author")
+
+        def step(msg, kind="system"):
+            ts = time.strftime("%H:%M:%S")
+            self.root.after(0, lambda: self._ai_append(f"[{ts}] {msg}", kind))
+            self.root.update_idletasks()
+
+        step(f"🧠 思考① 明确目标\n  文献: {title[:60]}")
+        step(f"  已知: 年份={year or '未知'} 作者={author or '未知'} | 目标: 找到并核验真实 DOI")
+
+        step(f"🧠 思考② 选检索源\n  优先 Crossref：标题+作者+年份综合检索，命中率高")
+        step("  🔍 执行 Crossref 标题检索...")
+        try:
+            machine = lit_verify.find_doi_by_title(title, year=year, author=author, threshold=0.6)
+        except Exception:
+            machine = None
+
+        if machine and machine.get("doi"):
+            step(f"✅ 思考③ 检索命中\n  DOI: {machine['doi']}\n  匹配度: {machine.get('similarity', 0):.0%}（≥60% 达标）", "ai")
+            step("  命中来源可信（Crossref 权威收录），直接写入 Excel")
+            self.root.after(0, lambda: self._write_doi_match(idx, machine["doi"],
+                             machine.get("similarity", 1.0), f"AI代理-{machine.get('source','Crossref')}", title))
+            self.root.after(0, lambda: self._ai_append(f"[{time.strftime('%H:%M:%S')}] ✅ 已写入 Excel：{machine['doi']}", "ai"))
+            return
+
+        step("⚠ 思考③ Crossref 未命中（标题差异/未被收录）", "warn")
+        step("🧠 思考④ 切换 DeepSeek 语义匹配\n  理由: 机器检索有收录盲区，AI 可凭语义记忆直接报 DOI")
+        if deepseek_ai.is_configured(self.ds_cfg):
+            try:
+                result = deepseek_ai.ai_find_doi(title, year=year, author=author, cfg=self.ds_cfg)
+            except Exception:
+                result = None
+            if result and result.get("doi"):
+                step(f"🤖 DeepSeek 候选: {result['doi']}（自评置信度 {result.get('confidence', 0):.0%}）")
+                step("🧠 思考⑤ 核验防编造\n  对 AI 候选执行 Crossref 双检: DOI 存在性 + 标题相似度 ≥60%")
+                v = lit_verify.verify_doi_full(result["doi"], title)
+                ok = bool(v.get("exists") and v.get("similarity", 0) >= 0.6)
+                if ok:
+                    step(f"✅ 思考⑤ 核验通过（存在 + 相似度 {v.get('similarity', 0):.0%}）\n  写入 Excel", "ai")
+                    self.root.after(0, lambda: self._write_doi_match(idx, result["doi"],
+                                     v.get("similarity", 0.6), "AI代理-DeepSeek", title))
+                    self.root.after(0, lambda: self._ai_append(f"[{time.strftime('%H:%M:%S')}] ✅ 已写入 Excel：{result['doi']}", "ai"))
+                    return
+                step(f"⚠ 思考⑤ 核验拦截\n  AI 给的 {result['doi']} 与真实标题相似度仅 {v.get('similarity', 0):.0%}，判定为编造/错配，不写入", "warn")
+            else:
+                step("❌ DeepSeek 未给出有效 DOI", "system")
+        else:
+            step("❌ DeepSeek 未配置（可在设置页填写 API Key）", "system")
+
+        step("⚠ 结论: 未能找到可信 DOI\n  可尝试:\n  1. 在对话中直接询问 AI 该文献信息\n  2. Google Scholar 人工核实标题拼写", "warn")
+
+    def _ai_proxy_get_pdf(self, idx, ref):
+        """AI 代理任务②：为选中文献搜集下载 PDF（机器 OA → AI 链接 → 下载 → 写入）。
+        全程以「思考步骤流」输出。"""
+        import lit_verify
+        doi = ref.get("doi", "")
+        title = ref.get("title", "")
+
+        def step(msg, kind="system"):
+            ts = time.strftime("%H:%M:%S")
+            self.root.after(0, lambda: self._ai_append(f"[{ts}] {msg}", kind))
+            self.root.update_idletasks()
+
+        if not doi or doi in ("未知", "待查询", "无"):
+            step("⚠ 前置检查失败: 该文献还没有 DOI", "warn")
+            step("  建议先执行「🔍 搜索 DOI」拿到 DOI 后再来下载")
+            return
+
+        step(f"🧠 思考① 明确目标\n  文献: {title[:60]}\n  DOI: {doi}")
+        step("🧠 思考② 先查免费 OA 镜像（先免费后付费原则）\n  查询 Semantic Scholar + Unpaywall...")
+        links = []
+        try:
+            v = lit_verify.verify_doi_full(doi, title)
+            if v.get("oa_url"):
+                links.append({"url": v["oa_url"], "source": "OA直链"})
+            for loc in (v.get("oa_locations") or []):
+                if loc.get("url") and loc["url"] not in [l["url"] for l in links]:
+                    links.append({"url": loc["url"], "source": f"Unpaywall-{loc.get('host','')[:18]}"})
+        except Exception:
+            pass
+
+        if links:
+            step(f"✅ 思考② 机器核验到 {len(links)} 个 OA 直链", "ai")
+            for l in links[:4]:
+                step(f"  · {l['source']}: {l['url'][:70]}")
+        else:
+            step("⚠ 思考② 无机器 OA 记录（非 OA 或镜像无收录）", "warn")
+            step("🧠 思考③ 询问 DeepSeek 找开放获取候选链接")
+            if deepseek_ai.is_configured(self.ds_cfg):
+                try:
+                    links = deepseek_ai.ai_find_pdf_links(doi, title, cfg=self.ds_cfg) or []
+                except Exception:
+                    links = []
+                if links:
+                    step(f"🤖 DeepSeek 给出 {len(links)} 个候选链接（注意: AI 链接需实测有效性）", "ai")
+            else:
+                step("❌ DeepSeek 未配置", "system")
+
+        if not links:
+            step("⚠ 思考③ 无可用链接 → 判定付费墙", "warn")
+            step("  建议:\n  1. 机构 VPN 访问期刊官网\n  2. 邮件向通讯作者索取\n  3. 馆际互借")
+            return
+
+        step(f"📥 思考④ 开始下载（{len(links)} 个候选，逐链接校验 %PDF 头）...")
+        from pdf_downloader import download_pdf
+        out_dir = os.path.join(self.output_dir.get(), "Downloaded_PDFs")
+        os.makedirs(out_dir, exist_ok=True)
+        from pdf_downloader import build_filename
+        row = self.df.loc[idx]
+        save_path = os.path.join(out_dir, build_filename(row) or "litbox_ai.pdf")
+
+        success, msg, source = download_pdf(doi, save_path, ai_links=links)
+        if success:
+            # 重命名优化
+            try:
+                final_path, meta_source = self._rename_after_ai_download(save_path, row, doi, out_dir)
+            except Exception:
+                final_path, meta_source = save_path, "表格"
+            rel = os.path.join(out_dir, os.path.basename(final_path)).replace("\\", "/")
+            self.root.after(0, lambda: self._mark_pdf_downloaded(idx, rel, final_path, f"AI代理-{source}"))
+            step(f"✅ 思考④ 下载成功 [{source}]\n  文件: {os.path.basename(final_path)}", "ai")
+            step("✅ 已写入 Excel 的 PDF 链接列", "ai")
+        else:
+            step(f"❌ 思考④ 下载失败: {msg}", "system")
+            step("  建议: 在对话中询问 AI 该文献的其他获取渠道")
+
+    def _mark_pdf_downloaded(self, idx, rel_path, final_path, source):
+        """把下载成功的结果写入 DataFrame 并刷新表格。"""
+        if idx in self.df.index:
+            self.df.at[idx, "PDF链接"] = f'=HYPERLINK("{rel_path}", "打开PDF")'
+            if "PDF状态" in list(self.df.columns):
+                self.df.at[idx, "PDF状态"] = "已下载"
+        self._refresh_table()
+        self._update_stats(stage="✅ AI 下载完成")
+
+    def _ai_send(self, _event=None):
+        """发送消息给 DeepSeek（后台线程，不阻塞界面）。"""
+        if not deepseek_ai.is_configured(self.ds_cfg):
+            self._ai_append("⚠ AI 未配置，请先在设置页填写 API Key。", "system")
+            return
+        text = self._ai_input.get("1.0", tk.END).strip()
+        if not text:
+            return
+        self._ai_input.delete("1.0", tk.END)
+        self._ai_append(text, "user")
+
+        # 附加引用的文献上下文
+        context = ""
+        if self._ai_attached:
+            r = self._ai_attached
+            context = (f"\n\n[引用的文献信息]\n标题: {r['title']}\n年份: {r['year']}\n"
+                       f"作者: {r['author']}\n期刊: {r['journal']}\nDOI: {r['doi']}\n状态: {r['status']}")
+
+        # 禁用发送按钮，防止连点
+        self._ai_send_btn.config(state=tk.DISABLED)
+        self._ai_status_var.set("思考中...")
+
+        def worker():
+            system_prompt = (
+                "你是 LitBox 文献工具的 AI 助手，擅长学术文献检索与补全。"
+                "回答要简洁、准确。若文献信息中标注了 DOI 状态为'获取失败'或'AI建议'，"
+                "可以尝试给出该文献的正确 DOI、期刊官网或开放获取来源，但必须提醒用户核实。"
+            )
+            try:
+                reply = deepseek_ai.chat_text(
+                    system_prompt, text + context, cfg=self.ds_cfg, temperature=0.3)
+                if not reply:
+                    ok, msg = deepseek_ai.diagnose_network(self.ds_cfg)
+                    reply = "（无响应）\n🔍 网络诊断: " + msg
+            except Exception as e:
+                reply = f"❌ 错误: {e}"
+
+            self.root.after(0, lambda: self._ai_show_reply(reply))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ai_show_reply(self, reply):
+        """在主线程显示 AI 回复。"""
+        if hasattr(self, "_ai_chat_log"):
+            self._ai_append(reply, "ai")
+        self._ai_send_btn.config(state=tk.NORMAL)
+        self._ai_status_var.set("就绪")
 
     # ═══════════════ 使用教程 ═══════════════
 
@@ -381,6 +1069,13 @@ class LiteratureApp:
                 "文件没有匹配：确保 Excel 标题与 PDF 首页题名接近，或在清单中补充 DOI。",
                 "建议先用少量文件测试并核对预览，再处理整个文件夹。",
             ]),
+            ("AI 补全", "DeepSeek 智能兜底与文献补全", [
+                "在设置页填入 DeepSeek API Key（platform.deepseek.com 获取）并启用 AI 补全。",
+                "AI 找 DOI：Crossref/OpenAlex 匹配失败时，AI 根据标题+作者+年份直接报出 DOI。",
+                "AI 找 PDF：tesble/doi.org/Sci-Hub 全部失败时，AI 提供 PMC/arXiv 等开放获取链接并自动尝试。",
+                "AI 补元数据：作者/年份/期刊/研究区域缺失时自动补全，文件名更规范。",
+                "置信度低于 70% 的 AI 结果只标记不写入，请人工在 doi.org 验证后手动补入。",
+            ]),
         ]
 
         step_buttons = []
@@ -434,7 +1129,21 @@ class LiteratureApp:
     # ═══════════════ 设置页 ═══════════════
 
     def _build_settings_page(self):
-        p = self.page_settings
+        # 外层 Canvas + 滚动条，让内容超出窗口时可滚动（避免 AI 补全卡片被截断）
+        canvas = tk.Canvas(self.page_settings, bg=C["bg_dark"], highlightthickness=0)
+        vscroll = ttk.Scrollbar(self.page_settings, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        inner = tk.Frame(canvas, bg=C["bg_dark"])
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=max(e.width, 1)))
+        # 鼠标滚轮滚动（Windows）
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+        p = inner  # 后续所有 widget 都 pack 到这个内部可滚动 Frame
 
         header = tk.Frame(p, bg=C["bg_dark"])
         header.pack(fill=tk.X, padx=18, pady=(16, 10))
@@ -467,6 +1176,19 @@ class LiteratureApp:
         self.threshold_canvas.bind("<Button-1>", self._on_slider_click)
         self.threshold_canvas.bind("<B1-Motion>", self._on_slider_drag)
 
+        # PDF 命名模式
+        fc_rm = self._card_frame(p, "📄 PDF 命名模式")
+        fc_rm.pack(fill=tk.X, padx=18, pady=(0, 10))
+        inner_rm = tk.Frame(fc_rm, bg=C["bg_card"])
+        inner_rm.pack(fill=tk.X, padx=16, pady=14)
+
+        tk.Radiobutton(inner_rm, text="本地命名（离线，快速）", variable=self.rename_mode,
+                       value="local", font=(FONT, 9), fg=C["text"], bg=C["bg_card"],
+                       activebackground=C["bg_card"], selectcolor=C["white"]).pack(anchor=tk.W, pady=2)
+        tk.Radiobutton(inner_rm, text="AI 命名（元数据缺失时用 DeepSeek 补全，需 API Key）",
+                       variable=self.rename_mode, value="ai", font=(FONT, 9), fg=C["text"],
+                       bg=C["bg_card"], activebackground=C["bg_card"], selectcolor=C["white"]).pack(anchor=tk.W, pady=2)
+
         # 说明
         fc2 = self._card_frame(p, "💡 使用说明")
         fc2.pack(fill=tk.X, padx=18)
@@ -477,6 +1199,7 @@ class LiteratureApp:
             ("1", "选择包含文献标题的 Excel 文件"),
             ("2", "点击「一键全流程」自动获取 DOI 并下载 PDF"),
             ("3", "或分步操作：先获取 DOI，再下载 PDF"),
+            ("🤖", "在设置页配置 DeepSeek API Key，可在常规来源失败时 AI 兜底补全"),
             ("📁", f"PDF 保存在: {self.output_dir.get()}\\Downloaded_PDFs"),
         ]
         for icon, tip in tips:
@@ -486,6 +1209,8 @@ class LiteratureApp:
                      bg=C["bg_card"], width=3).pack(side=tk.LEFT)
             tk.Label(row, text=tip, font=(FONT, 9), fg=C["text_dim"],
                      bg=C["bg_card"]).pack(side=tk.LEFT)
+
+        self._build_ai_settings_card(p)
 
     # ── UI 辅助方法 ──
 
@@ -553,6 +1278,96 @@ class LiteratureApp:
         sep.pack(fill=tk.X)
         return f
 
+    def _build_ai_settings_card(self, p):
+        """设置页的 DeepSeek AI 补全配置卡片。"""
+        fc = self._card_frame(p, "🤖 AI 补全（DeepSeek）")
+        fc.pack(fill=tk.X, padx=18, pady=(0, 10))
+
+        inner = tk.Frame(fc, bg=C["bg_card"])
+        inner.pack(fill=tk.X, padx=16, pady=14)
+
+        self.ai_enabled_var = tk.BooleanVar(value=bool(self.ds_cfg.get("deepseek_enabled")))
+        self.ai_key_var = tk.StringVar(value=self.ds_cfg.get("api_key", ""))
+        self.ai_url_var = tk.StringVar(value=self.ds_cfg.get("base_url", "https://api.deepseek.com"))
+        self.ai_model_var = tk.StringVar(value=self.ds_cfg.get("model", "deepseek-chat"))
+        self.ai_status_var = tk.StringVar(value="")
+
+        cb_row = tk.Frame(inner, bg=C["bg_card"])
+        cb_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Checkbutton(cb_row, text="启用 AI 补全（常规来源失败时自动兜底）",
+                       variable=self.ai_enabled_var, command=self._on_ai_toggle,
+                       font=(FONT, 9), fg=C["text"], bg=C["bg_card"],
+                       activebackground=C["bg_card"], selectcolor=C["white"]).pack(side=tk.LEFT)
+
+        def add_row(label, var, show=None, width=52):
+            row = tk.Frame(inner, bg=C["bg_card"])
+            row.pack(fill=tk.X, pady=3)
+            tk.Label(row, text=label, font=(FONT, 9), fg=C["text_dim"],
+                     bg=C["bg_card"], width=10, anchor=tk.W).pack(side=tk.LEFT)
+            tk.Entry(row, textvariable=var, font=(MONO, 9), show=show,
+                     bg=C["bg_input"], fg=C["text"], relief=tk.FLAT,
+                     insertbackground=C["text"], width=width).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        add_row("API Key", self.ai_key_var, show="*")
+        add_row("Base URL", self.ai_url_var)
+        add_row("模型", self.ai_model_var)
+
+        btn_row = tk.Frame(inner, bg=C["bg_card"])
+        btn_row.pack(fill=tk.X, pady=(10, 2))
+        self._make_button(btn_row, "保存配置", self._save_ai_config, kind="primary").pack(side=tk.LEFT)
+        self._make_button(btn_row, "测试连接", self._test_ai_connection, kind="secondary").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(btn_row, textvariable=self.ai_status_var, font=(FONT, 9),
+                 fg=C["accent2"], bg=C["bg_card"]).pack(side=tk.LEFT, padx=(12, 0))
+
+        tip = tk.Label(inner,
+                       text="当 Crossref/OpenAlex 匹配失败时 AI 辅助查找 DOI；下载失败时 AI 提供开放获取链接；"
+                            "命名信息缺失时 AI 补全元数据。Key 在 platform.deepseek.com 获取。",
+                       font=(FONT, 8), fg=C["text_dim"], bg=C["bg_card"],
+                       justify=tk.LEFT, anchor=tk.W, wraplength=560)
+        tip.pack(fill=tk.X, pady=(8, 0))
+
+    def _on_ai_toggle(self):
+        """启用开关：未填 Key 时提示并回弹。"""
+        if self.ai_enabled_var.get() and not str(self.ai_key_var.get()).strip():
+            self.ai_enabled_var.set(False)
+            messagebox.showwarning("提示", "请先填写 DeepSeek API Key\n（platform.deepseek.com 获取）")
+
+    def _save_ai_config(self):
+        """保存 AI 配置到 config.json。"""
+        self.ds_cfg["deepseek_enabled"] = self.ai_enabled_var.get()
+        self.ds_cfg["api_key"] = self.ai_key_var.get().strip()
+        self.ds_cfg["base_url"] = self.ai_url_var.get().strip() or "https://api.deepseek.com"
+        self.ds_cfg["model"] = self.ai_model_var.get().strip() or "deepseek-chat"
+        ok = deepseek_ai.save_config(self.ds_cfg)
+        if ok:
+            self.ai_status_var.set("✅ 已保存")
+            self._log("🤖 DeepSeek 配置已保存", "success")
+        else:
+            self.ai_status_var.set("❌ 保存失败")
+            self._log("🤖 DeepSeek 配置保存失败", "error")
+
+    def _test_ai_connection(self):
+        """测试 DeepSeek 连接。失败时给出网络诊断。"""
+        self.ai_status_var.set("⏳ 测试中...")
+        self.root.update_idletasks()
+        test_cfg = {
+            "api_key": self.ai_key_var.get().strip(),
+            "base_url": self.ai_url_var.get().strip() or "https://api.deepseek.com",
+            "model": self.ai_model_var.get().strip() or "deepseek-chat",
+            "timeout": 15,
+            "max_retries": 1,
+        }
+        ok, msg = deepseek_ai.test_connection(test_cfg)
+        if ok:
+            self.ai_status_var.set(f"✅ {msg}")
+        else:
+            # 连接失败 → 进一步诊断网络/代理
+            net_ok, net_msg = deepseek_ai.diagnose_network(test_cfg)
+            if not net_ok:
+                self.ai_status_var.set(f"❌ 网络问题: {net_msg}")
+            else:
+                self.ai_status_var.set(f"❌ {msg}")
+
     def _draw_progress(self, pct):
         self.progress_bar.delete("all")
         w = self.progress_bar.winfo_width()
@@ -560,6 +1375,93 @@ class LiteratureApp:
         fill = int(w * pct / 100)
         if fill > 0:
             self.progress_bar.create_rectangle(0, 0, fill, 6, fill=C["accent"], outline="")
+
+    # ═══════════════ 下载进度详情面板 ═══════════════
+
+    def _dl_init(self, total):
+        """下载开始：清空面板并初始化。total=总篇数。"""
+        if not hasattr(self, "dl_tree"):
+            return
+        for item in self.dl_tree.get_children():
+            self.dl_tree.delete(item)
+        self._dl_row_map = {}
+        self._dl_total = total
+        self._dl_done = 0
+        self._dl_ok = 0
+        self._dl_fail = 0
+        self._dl_start_time = time.time()
+        self._dl_update_bar(0)
+
+    def _dl_add_row(self, doi, title, status="等待", source="—", tag="wait"):
+        """为一条文献添加/更新下载状态行。返回 iid。"""
+        if not hasattr(self, "dl_tree"):
+            return None
+        key = str(doi or title or "").strip()
+        if key in self._dl_row_map:
+            iid = self._dl_row_map[key]
+        else:
+            no = len(self._dl_row_map) + 1
+            iid = self.dl_tree.insert("", tk.END, values=(no, self._short(str(title), 44),
+                                                          str(doi)[:32], source, status, "—"),
+                                      tags=(tag,))
+            self._dl_row_map[key] = iid
+        return iid
+
+    def _dl_update(self, doi, status, source=None, cost=None, title=None):
+        """更新某条文献的下载状态。"""
+        if not hasattr(self, "dl_tree"):
+            return
+        key = str(doi or title or "").strip()
+        iid = self._dl_row_map.get(key)
+        if not iid:
+            iid = self._dl_add_row(doi, title or doi, status, source or "—")
+            if not iid:
+                return
+        values = list(self.dl_tree.item(iid, "values"))
+        # values = [no, title, doi, source, status, cost]
+        if title:
+            values[1] = self._short(str(title), 44)
+        if source is not None:
+            values[3] = source
+        values[4] = status
+        if cost is not None:
+            values[5] = f"{cost:.1f}s" if cost > 0 else "—"
+        tag = "wait"
+        if "✅" in status or "成功" in status:
+            tag = "ok"
+            self._dl_ok += 1
+        elif "❌" in status or "失败" in status:
+            tag = "fail"
+            self._dl_fail += 1
+        elif "🤖" in status or "AI" in status:
+            tag = "ai"
+        self.dl_tree.item(iid, values=values, tags=(tag,))
+        self.dl_tree.see(iid)
+
+    def _dl_done_one(self, status):
+        """完成一篇：推进计数并刷新进度条。"""
+        self._dl_done += 1
+        pct = (self._dl_done / self._dl_total * 100) if self._dl_total else 0
+        self._dl_update_bar(pct)
+        self.dl_progress_var.set(f"{self._dl_done}/{self._dl_total} 篇")
+        if self._dl_start_time:
+            cost = time.time() - self._dl_start_time
+            self.status_var.set(f"下载进度: {self._dl_done}/{self._dl_total}（成功 {self._dl_ok} / 失败 {self._dl_fail}）{cost:.0f}s")
+        self.root.update_idletasks()
+
+    def _dl_update_bar(self, pct):
+        """画明细进度条。"""
+        if not hasattr(self, "dl_bar"):
+            return
+        self.dl_bar.delete("all")
+        w = self.dl_bar.winfo_width()
+        if w < 10:
+            w = 500
+        fill = int(w * pct / 100)
+        color = C["success"] if pct >= 100 else C["accent"]
+        if fill > 0:
+            self.dl_bar.create_rectangle(0, 0, fill, 8, fill=color, outline="")
+        self._dl_percent_var.set(f"{int(pct)}%")
 
     def _resolve_column(self, key):
         if self.df is None:
@@ -644,13 +1546,13 @@ class LiteratureApp:
             values = (
                 pos,
                 self._short(self._cell_text(row, tcn, "未命名文献"), 82),
+                "已下载" if pdf else "待下载",
+                doi_status,
                 self._short(self._cell_text(row, ycn), 8),
                 self._short(self._cell_text(row, acn), 22),
                 self._short(self._cell_text(row, jcn), 26),
-                doi_status,
                 self._short(self._cell_text(row, source_col, "—"), 12),
                 self._short(self._cell_text(row, match_col, "—"), 8),
-                "已下载" if pdf else "待下载",
             )
             state_tag = "matched" if doi else ("failed" if doi_status != "待查询" else "missing")
             tags = ["even" if pos % 2 == 0 else "odd", state_tag]
@@ -746,12 +1648,29 @@ class LiteratureApp:
         selected = self.paper_table.selection()
         if not selected:
             self._set_detail()
+            self._set_ai_proxy_buttons(False)
             return
         try:
             idx = int(selected[0])
+            self._selected_row_idx = idx
             self._set_detail(self.df.loc[idx])
+            self._set_ai_proxy_buttons(True)
         except Exception:
+            self._selected_row_idx = None
             self._set_detail()
+            self._set_ai_proxy_buttons(False)
+
+    def _set_ai_proxy_buttons(self, enabled):
+        """根据是否选中文献控制 AI 代理按钮可用性。"""
+        if not hasattr(self, "btn_ai_search_doi"):
+            return
+        if not enabled:
+            self.btn_ai_search_doi.config(state=tk.DISABLED)
+            self.btn_ai_get_pdf.config(state=tk.DISABLED)
+            return
+        state = tk.NORMAL if self.running is False else tk.DISABLED
+        self.btn_ai_search_doi.config(state=state)
+        self.btn_ai_get_pdf.config(state=state)
 
     def _draw_threshold_slider(self):
         self.threshold_canvas.delete("all")
@@ -920,11 +1839,14 @@ class LiteratureApp:
         self.running = True
         self.pdf_rename_results = []
         self._update_stats(stage="🔎 Excel 匹配 PDF...", pdf_done=0)
-        self._log(f"🔎 使用 Excel 元数据 {len(excel_rows)} 条，扫描 PDF 文件夹: {folder}", "header")
-        threading.Thread(target=self._scan_pdf_rename_thread, args=(folder, excel_rows), daemon=True).start()
+        mode = self.rename_mode.get()
+        mode_desc = "AI 命名" if mode == "ai" else "本地命名"
+        self._log(f"🔎 使用 Excel 元数据 {len(excel_rows)} 条，扫描 PDF 文件夹: {folder}（{mode_desc}）", "header")
+        threading.Thread(target=self._scan_pdf_rename_thread,
+                         args=(folder, excel_rows, mode), daemon=True).start()
 
 
-    def _scan_pdf_rename_thread(self, folder, excel_rows):
+    def _scan_pdf_rename_thread(self, folder, excel_rows, mode="local"):
         try:
             def cb(cur, total, item):
                 if total:
@@ -938,7 +1860,10 @@ class LiteratureApp:
                     self._log(f"  {cur}. {old_name} 识别失败", "warn")
                 self.root.update_idletasks()
 
-            results = scan_pdf_folder(folder, recursive=False, progress_callback=cb, excel_rows=excel_rows)
+            use_ai = (mode == "ai") and deepseek_ai.is_configured(self.ds_cfg)
+            ai_cfg = self.ds_cfg if use_ai else None
+            results = scan_pdf_folder(folder, recursive=False, progress_callback=cb,
+                                      excel_rows=excel_rows, use_ai=use_ai, ai_cfg=ai_cfg)
             self.pdf_rename_results = results
             self._draw_progress(100)
             self.status_var.set(f"PDF 命名预览完成: {len(results)} 个文件")
@@ -1190,6 +2115,13 @@ class LiteratureApp:
             self.status_var.set(f"DOI 完成：成功 {found}，未匹配 {failed}")
             if failed:
                 self._log(f"⚠ DOI 完成: {found}/{total} (未匹配 {failed})", "warn")
+                # DeepSeek AI 兜底：对失败条目串行调用 AI 找 DOI
+                ai_recovered = self._ai_backfill_doi(rows_p, futures_map)
+                if ai_recovered:
+                    found += ai_recovered
+                    failed -= ai_recovered
+                    self.df.to_excel(op, index=False)
+                    self._log(f"🤖 AI 兜底找回 {ai_recovered} 条 DOI", "success")
                 messagebox.showwarning("DOI 获取完成",
                     f"成功匹配 {found} 条，未匹配 {failed} 条。")
             else:
@@ -1207,6 +2139,107 @@ class LiteratureApp:
             self.running = False
             if not _pipeline_mode:
                 self._set_buttons_state(tk.NORMAL)
+
+    def _ai_backfill_doi(self, rows_p, futures_map):
+        """
+        DOI 兜底链路（文档 v2 方法）：
+        1. 机器核验找回：Crossref 标题检索 + Semantic Scholar 标题搜索找回真实 DOI
+        2. AI 兜底：上述都失败时让 DeepSeek 给候选 DOI
+        3. AI 结果必须过 Crossref 核验（exists + 标题相似度 >= 0.6）才能写入，防止 AI 编造
+        返回找回数量。
+        """
+        # 收集失败条目 (idx, title, year, author, journal)
+        failed_items = []
+        for future, (idx, title) in futures_map.items():
+            if self.stop_requested:
+                break
+            try:
+                r = future.result()
+            except Exception:
+                r = None
+            if not r or not r.get("doi"):
+                failed_items.append((idx, title))
+
+        if not failed_items:
+            return 0
+
+        import lit_verify
+        recovered = 0
+        machine_recovered = 0
+        # 状态栏提示 AI 搜索中
+        self.status_var.set(f"🤖 AI 搜索中... {len(failed_items)} 条待补 DOI")
+        self._update_stats(stage=f"🤖 AI 搜索中（{len(failed_items)} 条）")
+
+        for pos, (idx, title) in enumerate(failed_items):
+            if self.stop_requested:
+                break
+            headers = list(self.df.columns)
+            yc = self.detected.get("year_col")
+            ac = self.detected.get("author_col")
+            row = self.df.loc[idx]
+            year = extract_year(row.iloc[yc]) if yc is not None else None
+            author = str(row.get(headers[ac], "")) if ac is not None else None
+
+            # ① 机器核验找回（先免费：Crossref → S2）
+            try:
+                machine = lit_verify.find_doi_by_title(
+                    title, year=year, author=author, threshold=0.6)
+            except Exception:
+                machine = None
+
+            if machine and machine.get("doi"):
+                self._write_doi_match(idx, machine["doi"], machine.get("similarity", 1.0),
+                                      f"核验找回-{machine.get('source', 'Crossref')}", title)
+                machine_recovered += 1
+                recovered += 1
+                self._log(f"  🔍 ✅ [{machine.get('source','?')}] {machine['doi'][:40]} ← {str(title)[:40]}", "success")
+                self.root.update_idletasks()
+                continue
+
+            # ② AI 兜底（机器失败后，且已配置 Key）
+            if not deepseek_ai.is_configured(self.ds_cfg):
+                continue
+
+            self._log(f"  🤖 AI 兜底: {str(title)[:50]}", "info")
+            try:
+                result = deepseek_ai.ai_find_doi(
+                    title, year=year, author=author, cfg=self.ds_cfg)
+            except Exception:
+                result = None
+
+            if result and result.get("found") and result.get("doi"):
+                # AI 结果必须过核验：DOI 真实存在 + 标题相似度 >= 0.6
+                try:
+                    v = lit_verify.verify_doi_full(result["doi"], title)
+                except Exception:
+                    v = {"exists": None, "similarity": 0.0, "matched_title": ""}
+
+                verified_ok = bool(v.get("exists") and v.get("similarity", 0) >= 0.6)
+                confidence = result.get("confidence", 0)
+
+                if verified_ok and confidence >= 0.6:
+                    self._write_doi_match(idx, result["doi"], v.get("similarity", confidence),
+                                          "DeepSeek+核验", title)
+                    recovered += 1
+                    self._log(f"  🤖 ✅ 核验通过 [{v.get('similarity',0):.0%}] {result['doi'][:40]} ← {str(title)[:40]}", "success")
+                else:
+                    self.df.at[idx, "DOI状态"] = "AI建议(未核验)"
+                    self._log(f"  🤖 ⚠ {str(title)[:40]} → AI 给出 {result['doi'][:30]} 但核验未通过，待人工核对", "warn")
+            else:
+                self._log(f"  🤖 ❌ {str(title)[:40]}", "error")
+            self.root.update_idletasks()
+
+        if machine_recovered:
+            self._log(f"🔍 机器核验找回 {machine_recovered} 条", "success")
+        return recovered
+
+    def _write_doi_match(self, idx, doi, similarity, source, title):
+        """写入一条 DOI 匹配结果到 DataFrame。"""
+        self.df.at[idx, "DOI"] = doi
+        self.df.at[idx, "DOI链接"] = f"https://doi.org/{doi}"
+        self.df.at[idx, "匹配度"] = f"{int(similarity * 100)}%"
+        self.df.at[idx, "DOI来源"] = source
+        self.df.at[idx, "DOI状态"] = "已匹配"
 
     # ═══════════════ PDF 下载 ═══════════════
 
@@ -1309,6 +2342,7 @@ class LiteratureApp:
             sd = os.path.join(self.output_dir.get(), "Downloaded_PDFs")
             self._log(f"下载 PDF — {total} 篇 → {sd}", "header")
             self._update_stats(stage="📥 下载中...", pdf_done=0)
+            self._dl_init(total)
 
             # DOI → DataFrame index 映射（用于实时更新）
             doi_to_dfidx = {}
@@ -1324,16 +2358,24 @@ class LiteratureApp:
                 src = row.get("_download_source", "")
                 src_tag = f" [{src}]" if src and src != "—" else ""
                 ts = str(row.get("title", ""))[:40]
+                doi = str(row.get("DOI", ""))
+                # 下载详情面板实时更新
                 if "✅" in st:
+                    self._dl_update(doi, "✅ 成功", source=src or "—", cost=0, title=ts)
                     # 实时更新 DataFrame 中的 PDF 链接
                     d = row.get("DOI", "")
                     if d in doi_to_dfidx:
                         pl = row.get("PDF链接", "")
                         if pl: self.df.at[doi_to_dfidx[d], "PDF链接"] = pl
                     self._log(f"  ✅ {ts}{src_tag}", "success")
-                elif "跳过" in st: pass
+                elif "跳过" in st:
+                    self._dl_update(doi, "⏭ 跳过(已存在)", source=src or "—", title=ts)
+                elif "无 DOI" in st:
+                    self._dl_update(doi, "无 DOI", source="—", title=ts)
                 else:
+                    self._dl_update(doi, "❌ 失败", source=src or "—", title=ts)
                     self._log(f"  ❌ {ts}", "error")
+                self._dl_done_one(st)
                 # 每完成一条刷新表格
                 if cur % 2 == 0 or cur == tn:
                     self.root.after(0, self._refresh_table)
@@ -1359,6 +2401,15 @@ class LiteratureApp:
             self._draw_progress(100)
             self.status_var.set(f"PDF: {sc}/{total}")
             self._log(f"✅ PDF 完成: {sc}/{total}", "success")
+
+            # DeepSeek AI 兜底：对下载失败的条目找 OA 链接并重试（实时更新进度）
+            ai_recovered = self._ai_retry_failed_pdfs(results, sd, total, sc)
+            if ai_recovered:
+                sc += ai_recovered
+                self.df.to_excel(op, index=False)
+                self._log(f"🤖 AI 兜底成功下载 {ai_recovered} 篇", "success")
+            self.status_var.set(f"PDF: {sc}/{total}")
+
             self._log(f"📁 {op}", "info")
             self._update_stats(stage="✅ 完成", pdf_done=sc)
             self._refresh_table()
@@ -1376,6 +2427,119 @@ class LiteratureApp:
             self.running = False
             if not _pipeline_mode:
                 self._set_buttons_state(tk.NORMAL)
+
+    def _ai_retry_failed_pdfs(self, results, save_dir, base_total=0, base_done=0):
+        """
+        PDF 下载兜底链路（文档 v2 方法）：
+        1. 机器核验 OA 链接：S2 / Unpaywall 直接给免费 PDF 直链（GOLD/GREEN）
+        2. AI 兜底：机器没有 OA 信息时才让 DeepSeek 给候选链接
+        实时更新进度条与统计（base_total/base_done 用于延续主下载的进度）。
+        返回重试成功的数量。
+        """
+        import lit_verify
+
+        failed_rows = [r for r in results if "❌" in str(r.get("_download_status", ""))]
+        if not failed_rows:
+            return 0
+
+        from pdf_downloader import download_pdf
+        self._log(f"📡 下载兜底：{len(failed_rows)} 篇失败，先查 OA 镜像，再 AI 兜底", "header")
+        # 状态栏明确提示 AI 搜索中
+        self.status_var.set(f"🤖 AI 搜索中... {len(failed_rows)} 篇待补足")
+        self._update_stats(stage=f"🤖 AI 搜索中（{len(failed_rows)} 篇）")
+        recovered = 0
+        total_ai = len(failed_rows)
+        for idx, row in enumerate(failed_rows, start=1):
+            if self.stop_requested:
+                break
+
+            doi_key = str(row.get("DOI", ""))
+            title_short = str(row.get("title", ""))[:40]
+            # 面板标记为 AI 处理中
+            self._dl_update(doi_key, "🤖 AI 处理中", source="AI", title=title_short)
+
+            # 实时进度：主下载进度 + AI 兜底进度融合
+            done_now = base_done + recovered
+            total_now = max(base_total, 1)
+            pct = (done_now / total_now) * 100 if total_now else 0
+            self._draw_progress(pct)
+            self.status_var.set(f"PDF 兜底: {idx}/{total_ai}（已救回 {recovered}）")
+            self._update_stats(stage=f"🤖 AI 兜底 {idx}/{total_ai}", pdf_done=base_done + recovered)
+
+            doi = row.get("DOI", "")
+            title = str(row.get("title", ""))[:200]
+            links = []
+
+            # ① 机器核验：S2 OA 直链 + Unpaywall OA 镜像（可靠，优先）
+            if doi:
+                try:
+                    v = lit_verify.verify_doi_full(doi, title)
+                    if v.get("oa_url"):
+                        links.append({"url": v["oa_url"], "source": "OA直链"})
+                    for loc in (v.get("oa_locations") or []):
+                        if loc.get("url") and loc["url"] not in [l["url"] for l in links]:
+                            links.append({"url": loc["url"], "source": f"Unpaywall-{loc.get('host','')[:20]}"})
+                except Exception:
+                    pass
+                if links:
+                    self._log(f"  🔍 机器核验到 {len(links)} 个 OA 链接: {doi[:40]}", "info")
+
+            # ② AI 兜底：机器无 OA 信息且已配置 Key 时才问 AI
+            if not links and deepseek_ai.is_configured(self.ds_cfg):
+                self._log(f"  🤖 询问 AI: {doi or title[:50]}", "info")
+                try:
+                    links = deepseek_ai.ai_find_pdf_links(doi or "", title, cfg=self.ds_cfg) or []
+                except Exception:
+                    links = []
+
+            if not links:
+                self._dl_update(doi_key, "❌ 无可用链接", source="—", title=title_short)
+                self._log(f"  ❌ 无可用链接: {str(title)[:50]}", "error")
+                continue
+
+            # 用候选链接重试下载（机器 OA 优先，AI 链接最后）
+            save_path = os.path.join(save_dir, row.get("_pdf_filename", "litbox_ai.pdf"))
+            success, msg, source = download_pdf(doi, save_path, ai_links=links)
+            if success:
+                try:
+                    final_path, meta_source = self._rename_after_ai_download(save_path, row, doi, save_dir)
+                except Exception:
+                    final_path, meta_source = save_path, "表格"
+                final_filename = os.path.basename(final_path)
+                row["PDF链接"] = f'=HYPERLINK("{os.path.join(save_dir, final_filename).replace(chr(92), "/")}", "打开PDF")'
+                row["_pdf_filename"] = final_filename
+                row["_download_status"] = f"✅ {source} (命名:{meta_source})"
+                row["_download_source"] = source
+                d = row.get("DOI", "")
+                for dfi, dfrow in self.df.iterrows():
+                    if str(dfrow.get("DOI", "")).strip() == str(d).strip():
+                        self.df.at[dfi, "PDF链接"] = row["PDF链接"]
+                        break
+                recovered += 1
+                self._dl_update(doi_key, "✅ AI 救回", source=f"AI-{source}", title=title_short)
+                self._log(f"  ✅ [{source}] {final_filename[:50]}", "success")
+            else:
+                self._dl_update(doi_key, "❌ AI 失败", source="—", title=title_short)
+                self._log(f"  ❌ 兜底链接下载也失败: {str(title)[:50]}", "error")
+
+            # 实时刷新表格（每处理一条）
+            self.root.after(0, self._refresh_table)
+            self.root.update_idletasks()
+
+        self._draw_progress(100)
+        self.status_var.set(f"PDF 兜底完成：救回 {recovered}/{total_ai}")
+        # 下载面板显示最终结果
+        if hasattr(self, "dl_tree"):
+            self.dl_progress_var.set(f"{self._dl_total}/{self._dl_total} 篇")
+            self._dl_update_bar(100)
+        if recovered:
+            self._refresh_table()
+        return recovered
+
+    def _rename_after_ai_download(self, save_path, row, doi, save_dir):
+        """AI 下载成功后复用现有重命名逻辑（含网页+PDF 元数据优化）。"""
+        from pdf_downloader import try_rename_pdf_with_metadata
+        return try_rename_pdf_with_metadata(save_path, row, doi, save_dir)
 
     # ═══════════════ 全流程 ═══════════════
 

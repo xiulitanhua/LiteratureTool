@@ -1,6 +1,6 @@
 {
-    "version":  "20260802-1200",
-    "download_url":  "https://github.com/xiulitanhua/LiteratureTool/releases/download/v3.4.0/LitBox.exe",
-    "app_name":  "LitBox v3.4",
-    "release_notes":  "v3.4：新增 PDF 智能重命名、Excel 优先匹配、PDF 年份读取、期刊首字母缩写、题名语义简写、全新品牌图标与内置中文教程。"
+    "version":  "20260812-1955",
+    "download_url":  "https://github.com/xiulitanhua/LiteratureTool/releases/download/v3.12.0/LitBox.exe",
+    "app_name":  "LitBox v3.12",
+    "release_notes":  "v3.12：AI 文献代理（选中文献自动搜 DOI/下载，思考步骤流展示）、批量文献搜集（自动创建 Excel）、DeepSeek 核验防编造、下载进度详情面板、Sci-Hub 优先下载、文献核验三工具。"
 }
